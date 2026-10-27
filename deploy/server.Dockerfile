@@ -6,10 +6,11 @@ FROM node:22-alpine
 WORKDIR /app
 
 # 只拷贝依赖清单，最大化利用构建缓存
-COPY package.json package-lock.json tsconfig.base.json ./
-COPY packages ./packages
-COPY apps/server ./apps/server
-COPY apps/web/package.json ./apps/web/package.json
+# 注意：构建上下文 = 仓库根目录（见 docker-compose.yml），路径需带 syncframe-poc/ 前缀
+COPY syncframe-poc/package.json syncframe-poc/package-lock.json syncframe-poc/tsconfig.base.json ./
+COPY syncframe-poc/packages ./packages
+COPY syncframe-poc/apps/server ./apps/server
+COPY syncframe-poc/apps/web/package.json ./apps/web/package.json
 
 # devDependencies（tsx/typescript/ws 等）随 workspaces 一起安装
 RUN npm ci --no-audit --no-fund

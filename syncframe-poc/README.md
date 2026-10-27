@@ -2,6 +2,9 @@
 
 基于 Movi Player + OpenList 的多人同步观影室可行性验证项目。验证计划见 `../docs/feasibility-validation-plan.md`。
 
+> **运行与部署**（npm 本地调试、Docker 构建部署、环境变量说明）见仓库根目录的 [README](../README.md)；
+> 本文只保留 P0–P2 验证流程细节。
+
 ## 目录结构
 
 ```text

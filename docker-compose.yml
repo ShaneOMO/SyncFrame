@@ -14,8 +14,8 @@
 services:
   server:
     build:
-      context: ./syncframe-poc
-      dockerfile: ../deploy/server.Dockerfile
+      context: .
+      dockerfile: deploy/server.Dockerfile
     environment:
       SERVER_PORT: "8787"
       OPENLIST_BASE_URL: ${OPENLIST_BASE_URL:-}
@@ -27,8 +27,8 @@ services:
 
   web:
     build:
-      context: ./syncframe-poc
-      dockerfile: ../deploy/web.Dockerfile
+      context: .
+      dockerfile: deploy/web.Dockerfile
     ports:
       - "7300:80"
     depends_on:

@@ -1,0 +1,12 @@
+# 构建上下文 = 仓库根目录：瘦身构建包，加速镜像构建
+**/node_modules
+**/dist
+**/.env
+.env.*
+.git
+.gitignore
+syncframe-poc/reports
+**/reports
+**/*.log
+shot-*.png
+docs
