@@ -48,9 +48,8 @@ const statsEl = $("#stats");
 const decoderSel = $<HTMLSelectElement>("#decoder");
 const codecInfoInput = $<HTMLInputElement>("#codecInfo");
 
-// 预置 .env 中固定的测试文件，减少手工输入
-pathInput.value =
-  "/guanya/05.动漫/Cyberpunk.Edgerunners.S02E01.Last.Chance.for.a.Slow.Dance.1080p.NF.WEB-DL.DUAL.DDP5.1.H.264-VARYG.mkv";
+// 测试文件路径由使用者在页面输入（不入库，避免泄露个人媒体库结构）
+pathInput.value = "";
 
 let metrics: PlaybackMetrics | null = null;
 let current: ResolveResponse | null = null;
