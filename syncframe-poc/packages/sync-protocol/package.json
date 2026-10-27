@@ -1,0 +1,17 @@
+{
+  "name": "@syncframe/sync-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SyncFrame P2：多人同步协议共享包（状态模型、时钟偏移估算、跟随/漂移纠正、消息校验）",
+  "exports": {
+    ".": "./src/index.ts",
+    "./clock": "./src/clock.ts",
+    "./follower": "./src/follower.ts",
+    "./validate": "./src/validate.ts",
+    "./virtual-clock": "./src/virtual-clock.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

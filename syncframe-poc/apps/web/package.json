@@ -1,0 +1,17 @@
+{
+  "name": "@syncframe/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "movi-player": "0.4.1"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

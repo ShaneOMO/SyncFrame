@@ -1,0 +1,68 @@
+/* ─────────────────────────────────────────────────────────────
+   SyncFrame Design Tokens · Phase 2 基础层
+   中性灰 + 单一强调色（蓝）；语义色仅以「细边框 + 文字」出现，不做色块。
+   所有页面与组件必须引用此文件的变量，禁止再写死色值。
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  color-scheme: dark;
+
+  /* ── 背景层级（四层，靠明度分层，不靠彩色） ── */
+  --bg: #0e1013;          /* 页面底 */
+  --panel: #15181d;       /* 卡片 / 面板 */
+  --panel-2: #1c2027;     /* 按钮底、hover 底、输入框底 */
+  --panel-hover: #232932; /* hover 态 */
+
+  /* ── 边框：细、低对比 ── */
+  --border: #262b34;
+  --border-strong: #333a46;
+
+  /* ── 文字三级 ── */
+  --text: #e9ebef;        /* 正文 / 标题 */
+  --text-dim: #9aa3b2;    /* 辅助文字、标签、placeholder */
+  --text-faint: #6b7482;  /* 弱化信息（页脚、禁用） */
+
+  /* ── 强调色（全站唯一装饰色） ── */
+  --accent: #4c8dff;
+  --accent-hover: #6ba1ff;
+  --accent-contrast: #ffffff;
+
+  /* ── 语义色：仅用于文字 + 1px 边框 + 8% 底色 ── */
+  --success: #34c077;
+  --warning: #e5b64f;
+  --danger: #e5604c;
+  --success-border: #1d4431;
+  --warning-border: #4d4020;
+  --danger-border: #4d2b26;
+
+  /* ── 字体：Inter 优先（本机有则自动启用），否则系统栈 ──
+     三级层级：标题 17/600 · 正文 14/400 · 辅助 12-13/400 */
+  --font-sans: "Inter", "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  --fs-title: 17px;
+  --fs-body: 14px;
+  --fs-small: 13px;
+  --fs-caption: 12px;
+
+  /* ── 间距：4px 基准 ── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* ── 圆角：两档 ── */
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;   /* 仅 badge / chip / 圆形图标按钮 */
+
+  /* ── 阴影：只给浮层与 hover，禁止大面积重阴影 ── */
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--border);
+  --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.3);
+
+  /* ── 布局 ── */
+  --container: 1280px;
+  --container-narrow: 520px;
+}

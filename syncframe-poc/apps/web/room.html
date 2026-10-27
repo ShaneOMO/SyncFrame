@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='5' fill='%230e1013' stroke='%234c8dff'/%3E%3Cpath d='M10 8.2v7.6L16 12z' fill='%234c8dff'/%3E%3C/svg%3E" />
+  <title>SyncFrame 观影室</title>
+  <link rel="stylesheet" href="/src/styles/tokens.css" />
+  <link rel="stylesheet" href="/src/styles/components.css" />
+  <style>
+    /* 本页专属：布局与观影室特有元素；颜色一律引用 tokens，class 名冻结 */
+    body { padding: 0 20px var(--sp-8); font-size: var(--fs-body); line-height: 1.55; }
+
+    /* ── 顶栏：与内容区同宽对齐 ── */
+    header.top {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      max-width: var(--container); margin: 0 auto;
+      padding: 14px 0 var(--sp-3); border-bottom: 1px solid var(--border);
+      margin-bottom: var(--sp-4);
+    }
+    header.top .logo { font-size: var(--fs-title); font-weight: 700; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: var(--sp-2); }
+    header.top .logo .logo-mark { color: var(--accent); display: inline-flex; }
+    header.top .logo span { color: var(--text-dim); font-weight: 400; font-size: var(--fs-caption); }
+    header.top #members { display: inline-flex; gap: var(--sp-1); flex-wrap: wrap; }
+
+    /* ── 布局 ── */
+    .layout {
+      display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--sp-4);
+      max-width: var(--container); margin: 0 auto;
+    }
+    @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+
+    .card h3 {
+      color: var(--text-dim); letter-spacing: 0.3px;
+      display: flex; align-items: center; gap: var(--sp-2);
+    }
+    .card h3 span { font-weight: 400; text-transform: none; }
+    .card h3 .right { margin-left: auto; display: flex; gap: 6px; }
+
+    /* ── 播放器 ── */
+    #playerWrap {
+      position: relative; border-radius: var(--radius); overflow: hidden;
+      background: #000; aspect-ratio: 16/9;
+    }
+    #playerWrap movi-player { width: 100%; height: 100%; display: block; }
+    #gestureOverlay {
+      position: absolute; inset: 0; display: none;
+      align-items: center; justify-content: center;
+      background: rgba(5, 8, 14, 0.78); z-index: 5;
+    }
+    #gestureOverlay.show { display: flex; }
+    #gestureOverlay button { font-size: var(--fs-body); padding: 13px 30px; border-radius: var(--radius-pill); }
+    #clockFace {
+      font: 700 54px/1.2 var(--font-mono);
+      text-align: center; padding: 40px 0 var(--sp-2); letter-spacing: 2px;
+    }
+    #clockSub { text-align: center; color: var(--text-dim); padding-bottom: 34px; }
+
+    /* ── 控制条：窄屏允许换行 ── */
+    .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 4px 2px; }
+    .controls button.icon {
+      width: 36px; height: 36px; padding: 0; border-radius: var(--radius-pill);
+      flex: 0 0 auto;
+    }
+    .controls button.icon .ic { width: 15px; height: 15px; }
+    .controls button.main-play { width: 42px; height: 42px; background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+    .controls button.main-play:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .controls button.main-play .ic { width: 17px; height: 17px; }
+    #seekBar { flex: 1; min-width: 120px; height: 22px; }
+    #seekBar:disabled { accent-color: var(--border-strong); }
+    #seekLabel {
+      font: var(--fs-caption) var(--font-mono); color: var(--text-dim);
+      flex: 0 0 auto; min-width: 92px; text-align: center;
+    }
+    .viewer-bar { padding: 10px 4px 2px; color: var(--text-dim); font-size: var(--fs-small); display: flex; align-items: center; gap: var(--sp-2); }
+    .viewer-bar .live-dot {
+      width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--success);
+      display: inline-block; flex: 0 0 auto;
+    }
+    .viewer-bar.paused .live-dot { background: var(--warning); }
+    #viewerBarTime { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-caption); }
+    #status { color: var(--text-dim); font-size: var(--fs-small); min-height: 20px; padding: 6px 4px 0; }
+    #status.warn { color: var(--warning); }
+    #status.warn::before {
+      content: ""; display: inline-block; width: 7px; height: 7px;
+      border-radius: var(--radius-pill); background: var(--warning);
+      margin-right: var(--sp-2); vertical-align: 1px;
+    }
+
+    /* ── 选片面板 ── */
+    #browseList {
+      max-height: 300px; overflow-y: auto; margin-top: var(--sp-2);
+      border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
+    }
+    .browse-row {
+      display: flex; align-items: center; gap: var(--sp-2);
+      padding: 6px var(--sp-3); border-bottom: 1px solid var(--border); cursor: default;
+    }
+    .browse-row:last-child { border-bottom: 0; }
+    .browse-row.video, .browse-row.dir { cursor: pointer; }
+    .browse-row.video:hover, .browse-row.dir:hover { background: var(--panel-2); }
+    .browse-icon { flex: 0 0 auto; color: var(--text-dim); display: inline-flex; }
+    .browse-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .browse-size { color: var(--text-dim); font-size: var(--fs-caption); flex: 0 0 auto; }
+    .browse-pick { padding: 2px var(--sp-3); font-size: var(--fs-caption); flex: 0 0 auto; border-radius: var(--radius-pill); }
+    .browse-empty { padding: 18px; text-align: center; color: var(--text-dim); }
+    #browsePath { flex: 1; min-width: 160px; }
+
+    /* ── 片源清单 ── */
+    #mediaList .browse-row { cursor: default; }
+    .media-kind { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 1px var(--sp-2); flex: 0 0 auto; }
+
+    /* ── 邀请行：卡片化横条，与内容区同宽 ── */
+    #inviteRow {
+      display: none; align-items: center; gap: 10px; flex-wrap: wrap;
+      max-width: var(--container); margin: 0 auto var(--sp-4);
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); padding: 10px var(--sp-4);
+    }
+    #inviteRow.show { display: flex; }
+    #inviteRow > label { color: var(--text-dim); font-size: var(--fs-caption); flex: 0 0 auto; }
+    #inviteLink { flex: 1; min-width: 220px; font-size: var(--fs-caption); }
+    #inviteRow button { padding: 3px 12px; }
+
+    /* ── 调试面板 ── */
+    details.debug { color: var(--text-dim); }
+    details.debug summary {
+      cursor: pointer; font-size: var(--fs-small); user-select: none;
+      padding: 4px 0; display: flex; align-items: center; gap: var(--sp-2);
+    }
+    details.debug summary:hover { color: var(--text); }
+    #hud {
+      font: var(--fs-caption)/1.6 var(--font-mono);
+      white-space: pre-wrap; color: var(--accent); margin: var(--sp-2) 0 0;
+      background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px var(--sp-3);
+    }
+  </style>
+</head>
+<body>
+  <!-- 图标 sprite：与 src/icons.ts 的路径定义保持一致（lucide 风格 24×24 描边） -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h3.5v14H7z" fill="currentColor" stroke="none"/><path d="M13.5 5H17v14h-3.5z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></symbol>
+      <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+      <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3z"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="top">
+    <span class="logo">
+      <svg class="logo-mark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="20" rx="5"/><path d="M10 8.2v7.6L16 12z" fill="currentColor" stroke="none"/>
+      </svg>
+      SyncFrame<span>多人同步观影室</span>
+    </span>
+    <span id="roomBadge" class="badge">房间 <b>-</b></span>
+    <span id="roleBadge" class="badge viewer">观众</span>
+    <span id="connBadge" class="badge conn">连接中…</span>
+    <span id="mediaBadge" class="badge">无媒体</span>
+    <span class="spacer"></span>
+    <span id="members"></span>
+    <button id="inviteToggle" class="ghost" title="邀请码与分享"><svg class="ic"><use href="#i-users"/></svg>邀请</button>
+    <a href="/lobby.html"><button class="ghost" title="返回大厅">退出房间</button></a>
+  </header>
+
+  <div id="inviteRow">
+    <label for="inviteLink">邀请链接</label>
+    <input id="inviteLink" readonly title="任何人打开此链接即可进房；重置后旧链接立即失效" />
+    <button id="copyInvite" class="primary">复制链接</button>
+    <button id="rotateInvite" class="danger" title="旧链接立即失效，已加入成员不受影响">重置链接</button>
+  </div>
+
+  <div class="layout">
+    <div>
+      <!-- 播放器 -->
+      <div class="card" style="padding:10px">
+        <div id="clockMode" hidden>
+          <div id="clockFace">00:00:00.0</div>
+          <div id="clockSub">虚拟时钟模式（同步行为演示 / 测试载体）</div>
+        </div>
+        <div id="playerWrap" hidden>
+          <movi-player theme="dark" wasmurl=""></movi-player>
+          <div id="gestureOverlay"><button id="joinPlay" class="primary"><svg class="ic ic-fill" style="width:17px;height:17px"><use href="#i-play"/></svg>点击加入播放</button></div>
+        </div>
+        <!-- 房主控制条 -->
+        <div class="controls" id="hostControls" hidden>
+          <button id="playBtn" class="icon main-play" title="播放"><svg class="ic ic-fill"><use href="#i-play"/></svg></button>
+          <button id="pauseBtn" class="icon" title="暂停"><svg class="ic ic-fill"><use href="#i-pause"/></svg></button>
+          <button id="back10" class="icon" title="后退 10 秒">−10s</button>
+          <input type="range" id="seekBar" min="0" max="7200000" value="0" />
+          <button id="fwd10" class="icon" title="前进 10 秒">＋10s</button>
+          <span id="seekLabel">00:00 / 00:00</span>
+          <select id="rateSel" title="倍速">
+            <option>0.5</option><option selected>1</option><option>1.25</option>
+            <option>1.5</option><option>2</option>
+          </select>
+          <select id="audioTrackSel" title="音轨（仅本地）"><option value="">音轨</option></select>
+          <select id="subTrackSel" title="字幕（仅本地）"><option value="">字幕关</option></select>
+        </div>
+        <!-- 观众状态条 -->
+        <div class="viewer-bar" id="viewerBar" hidden>
+          <span class="live-dot"></span>
+          <span id="viewerBarText">跟随房主</span>
+          <span id="viewerBarTime"></span>
+        </div>
+        <div id="status" role="status" aria-live="polite">初始化…</div>
+      </div>
+
+      <!-- 选片（仅房主可见；与播放器同页） -->
+      <div class="card" id="browseCard" hidden>
+        <h3>OpenList 选片 <span>仅房主可浏览媒体库</span></h3>
+        <div class="row">
+          <button id="browseUp" title="上级目录" aria-label="上级目录" class="icon" style="width:32px;height:32px"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
+          <input type="text" id="browsePath" value="/" aria-label="目录路径" />
+          <button id="browseGo">进入</button>
+          <input type="text" id="browseSearch" placeholder="搜索文件名…" aria-label="搜索文件名" style="min-width:130px;flex:0 1 200px" />
+          <button id="browseSearchBtn">搜索</button>
+          <span class="spacer"></span>
+          <button id="browsePrev">上一页</button>
+          <span id="browsePageInfo" style="color:var(--text-dim);font-size:12px"></span>
+          <button id="browseNext">下一页</button>
+        </div>
+        <div id="browseList"></div>
+      </div>
+    </div>
+
+    <div>
+      <!-- 房间片源 -->
+      <div class="card">
+        <h3>房间片源 <span>mediaId 不透明映射</span></h3>
+        <div id="mediaList"></div>
+      </div>
+
+      <!-- 诊断与采样（默认折叠） -->
+      <div class="card">
+        <details class="debug">
+          <summary><svg class="ic"><use href="#i-wrench"/></svg>诊断与采样（调试用）</summary>
+          <div id="manualLoadRow" class="row" hidden style="margin-top:10px">
+            <input type="text" id="mediaPath" placeholder="mediaId（clock 模式测试用）" />
+            <button id="loadBtn" class="primary">载入并广播</button>
+          </div>
+          <pre id="hud"></pre>
+          <div class="row" style="margin-top:10px">
+            <button id="exportBtn">导出采样 JSON</button>
+            <button id="uploadBtn">上传到服务端</button>
+            <span id="sampleCount" style="color:var(--text-dim);font-size:12px"></span>
+          </div>
+          <p style="font-size:12px;margin:10px 0 0">
+            URL 参数：<code>?room=&amp;name=&amp;mode=player|clock&amp;hardDriftMs=</code><br />
+            成员令牌存于会话存储（大厅页签发），过期自动回大厅。
+          </p>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/room-main.ts"></script>
+</body>
+</html>

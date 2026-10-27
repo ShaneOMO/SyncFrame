@@ -1,0 +1,34 @@
+{
+  "name": "syncframe-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SyncFrame 可行性验证 PoC：OpenList 媒体访问 + 多人同步观影室",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "tests/*"
+  ],
+  "scripts": {
+    "p0:probe": "tsx --env-file-if-exists=.env tests/http/probe-openlist.ts",
+    "p0:check": "tsx tests/http/check-http.ts",
+    "p1:server": "tsx --env-file-if-exists=.env apps/server/src/index.ts",
+    "p1:web": "npm run dev -w @syncframe/web",
+    "p2:unit": "node --import tsx --test tests/sync/protocol-unit.test.ts",
+    "p2:sim": "node --import tsx tests/sync/sync-sim-test.ts",
+    "p2:browser": "node --import tsx tests/sync/sync-browser-test.ts",
+    "p2:smoke": "node --import tsx tests/sync/demo-e2e-smoke.ts",
+    "p2:demo": "tsx --env-file-if-exists=.env apps/server/src/index.ts",
+    "p3:security": "node --import tsx --test tests/p3/security.test.ts",
+    "p3:e2e": "node --import tsx tests/p3/e2e-smoke.ts",
+    "p3:ui": "node --import tsx tests/p3/lobby-ui-smoke.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.base.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.2",
+    "playwright-core": "^1.64.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

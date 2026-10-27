@@ -1,0 +1,170 @@
+/* ─────────────────────────────────────────────────────────────
+   SyncFrame 基础组件层 · 参考 shadcn/ui 语义，适配无框架项目
+   约定：
+   · 现有 class 名（.card/.badge/.chip/.browse-row…）被 TS 与测试依赖，冻结不改名。
+   · 新增尚未用到的组件（Dialog/Tabs/Table）使用 sf- 前缀，页面按需启用。
+   ───────────────────────────────────────────────────────────── */
+
+/* ── 重置 ── */
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--fs-body)/1.6 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+h1 { font-size: var(--fs-title); font-weight: 600; margin: 0 0 var(--sp-3); letter-spacing: 0.2px; }
+h2 { font-size: 15px; font-weight: 600; margin: 0 0 var(--sp-3); }
+h3 { font-size: var(--fs-small); font-weight: 600; margin: 0 0 var(--sp-3); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code {
+  background: var(--panel-2); padding: 1px 5px;
+  border-radius: var(--sp-1); font-family: var(--font-mono); font-size: 0.92em;
+}
+
+/* ── 图标：统一 .ic（描边式，lucide 风格 24×24 viewBox） ──
+   HTML 中用 <svg class="ic"><use href="#i-play"/></svg>（页面内 sprite）
+   TS 中用 src/icons.ts 的 icon() 返回内联字符串，二者路径保持一致。 */
+.ic {
+  width: 16px; height: 16px; flex: 0 0 auto;
+  fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  vertical-align: -3px;
+}
+.ic-fill { fill: currentColor; stroke: none; }
+
+/* ── Card / Panel ── */
+.card, .panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4) var(--sp-5);
+  margin-bottom: var(--sp-4);
+}
+
+/* ── Button：primary（唯一实色块 = 强调色）/ 默认 secondary / ghost / danger ──
+   变体名沿用现状（.primary/.secondary/.ghost/.danger/.join），不新增 API。 */
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-1);
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 14px;
+  font: inherit; font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+button:hover:not(:disabled) {
+  background: var(--panel-hover);
+  border-color: var(--border-strong);
+}
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+button.primary, button.join {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+button.primary:hover:not(:disabled), button.join:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+button.secondary { background: var(--panel-2); }
+button.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
+button.ghost:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
+button.danger {
+  background: transparent;
+  border-color: var(--danger-border);
+  color: var(--danger);           /* 语义色只作文字 + 细边框，不做色块 */
+}
+button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: var(--danger);
+}
+
+/* ── Input / Select / Textarea ── */
+input, select, textarea {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font: inherit;
+}
+input::placeholder { color: var(--text-faint); }
+input:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--border-strong); }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); outline: none; }
+input:disabled, select:disabled { opacity: 0.5; }
+input[readonly] { color: var(--text-dim); }
+input[type="range"] { accent-color: var(--accent); padding: 0; border: 0; background: transparent; }
+input[type="range"]:disabled { accent-color: var(--border-strong); }
+
+/* ── Badge / Chip（胶囊，仅文字 + 细边框） ──
+   变体名被 room-main.ts 的 className 拼接依赖：host/viewer/media-ok/
+   media-loading/media-fail/conn/off —— 冻结。 */
+.badge, .chip {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-caption);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.badge b { color: var(--text); font-weight: 600; }
+.chip { background: var(--panel-2); }
+.chip.me { color: var(--text); border-color: var(--success-border); }
+.chip .crown { color: var(--warning); display: inline-flex; }
+.badge.host, .badge.media-loading { color: var(--warning); border-color: var(--warning-border); }
+.badge.viewer { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.badge.media-ok, .badge.conn { color: var(--success); border-color: var(--success-border); }
+.badge.media-fail, .badge.conn.off { color: var(--danger); border-color: var(--danger-border); }
+
+/* ── 通用辅助 ── */
+.row { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+.row + .row { margin-top: var(--sp-2); }
+.hint { color: var(--text-dim); font-size: var(--fs-caption); }
+.spacer, .row .spacer { flex: 1; }
+
+/* ── sf-Dialog：遮罩 + 浮层（阴影仅此处与 hover 使用） ── */
+.sf-dialog-overlay {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(6, 8, 12, 0.65);
+  display: flex; align-items: center; justify-content: center;
+}
+.sf-dialog {
+  width: min(440px, calc(100vw - 32px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  padding: var(--sp-6);
+}
+.sf-dialog h3 { font-size: var(--fs-title); color: var(--text); margin: 0 0 var(--sp-2); }
+.sf-dialog .sf-dialog-desc { color: var(--text-dim); font-size: var(--fs-small); margin: 0 0 var(--sp-5); }
+.sf-dialog .sf-dialog-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-5); }
+
+/* ── sf-Tabs ── */
+.sf-tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--border); margin-bottom: var(--sp-4); }
+.sf-tab {
+  background: none; border: 0; border-radius: 0;
+  padding: 8px 12px; color: var(--text-dim);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.sf-tab:hover:not(:disabled) { background: none; color: var(--text); }
+.sf-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+
+/* ── sf-Table ── */
+.sf-table { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+.sf-table th {
+  text-align: left; font-weight: 500; color: var(--text-dim);
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.sf-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.sf-table tbody tr:hover { background: var(--panel-2); }

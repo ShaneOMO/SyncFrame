@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='5' fill='%230e1013' stroke='%234c8dff'/%3E%3Cpath d='M10 8.2v7.6L16 12z' fill='%234c8dff'/%3E%3C/svg%3E" />
+  <title>SyncFrame 观影室 · 大厅（P3）</title>
+  <link rel="stylesheet" href="/src/styles/tokens.css" />
+  <link rel="stylesheet" href="/src/styles/components.css" />
+  <style>
+    /* ── 大厅页专属：顶栏 + 居中窄容器 ── */
+    body { padding: 0; display: block; }
+
+    .topnav {
+      display: flex; align-items: center; gap: var(--sp-2);
+      max-width: var(--container); margin: 0 auto;
+      padding: var(--sp-4) 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .topnav .brand {
+      display: inline-flex; align-items: center; gap: var(--sp-2);
+      font-size: var(--fs-title); font-weight: 700; letter-spacing: 0.3px;
+      color: var(--text); text-decoration: none;
+    }
+    .topnav .brand:hover { text-decoration: none; }
+    .topnav .brand .logo-mark { color: var(--accent); display: inline-flex; }
+    .topnav nav { margin-left: auto; display: flex; align-items: center; gap: var(--sp-4); }
+    .topnav nav a { color: var(--text-dim); font-size: var(--fs-small); }
+    .topnav nav a:hover { color: var(--text); text-decoration: none; }
+
+    main {
+      width: 100%; max-width: var(--container-narrow);
+      margin: 0 auto; padding: var(--sp-8) 20px var(--sp-6);
+    }
+    .page-head { margin-bottom: var(--sp-6); }
+    .page-head h1 small { color: var(--text-dim); font-weight: 400; font-size: var(--fs-small); margin-left: var(--sp-2); }
+    .page-head .sub { color: var(--text-dim); margin: var(--sp-1) 0 0; font-size: var(--fs-small); }
+
+    .card { transition: border-color 0.12s; }
+    .card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-hover); }
+    .card h2 { display: flex; align-items: center; gap: var(--sp-2); font-size: 15px; }
+    .card h2 .ic { color: var(--text-dim); }
+    .card .desc { color: var(--text-dim); font-size: var(--fs-small); margin: calc(-1 * var(--sp-1)) 0 var(--sp-4); }
+
+    label { display: block; color: var(--text-dim); font-size: var(--fs-caption); margin: var(--sp-3) 0 var(--sp-1); }
+    input { width: 100%; padding: 8px 10px; }
+    button { margin-top: var(--sp-4); width: 100%; padding: 9px 12px; font-weight: 600; }
+
+    /* 状态行：Dot + 文本（#msg 由 lobby-main.ts 写 textContent，纯 CSS 呈现状态点） */
+    #msg { min-height: 20px; margin: var(--sp-4) 0 0; font-size: var(--fs-small); color: var(--text-dim); }
+    #msg:not(:empty)::before {
+      content: ""; display: inline-block; width: 8px; height: 8px;
+      border-radius: var(--radius-pill); background: var(--warning);
+      margin-right: var(--sp-2); vertical-align: 1px;
+    }
+
+    .foot { color: var(--text-faint); font-size: var(--fs-caption); margin-top: var(--sp-6); line-height: 1.7; }
+
+    @media (max-width: 560px) {
+      main { padding-top: var(--sp-6); }
+    }
+  </style>
+</head>
+<body>
+  <!-- 图标 sprite：与 src/icons.ts 的路径定义保持一致（lucide 风格 24×24 描边） -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
+      <symbol id="i-log-in" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="topnav">
+    <a class="brand" href="/lobby.html" aria-label="SyncFrame 首页">
+      <svg class="logo-mark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="20" rx="5"/><path d="M10 8.2v7.6L16 12z" fill="currentColor" stroke="none"/>
+      </svg>
+      SyncFrame
+    </a>
+    <nav>
+      <a href="/" title="P1 原始文件播放验证页（无房间逻辑）">播放验证页</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="page-head">
+      <h1>SyncFrame 观影室 <small>P3 最小 MVP · 房间鉴权</small></h1>
+      <p class="sub">创建房间后把链接分享给朋友；对方点开链接即进房，无需 OpenList 账号。</p>
+    </div>
+
+    <div class="card">
+      <h2><svg class="ic"><use href="#i-plus"/></svg>创建房间</h2>
+      <p class="desc">成为房主：可从 OpenList 媒体库选片，统一控制播放、暂停、进度、倍速与换片。</p>
+      <label for="createName">你的昵称</label>
+      <input id="createName" type="text" maxlength="24" placeholder="例如：小明" autocomplete="nickname" />
+      <button id="createBtn" class="primary" aria-label="创建房间并成为房主">创建房间</button>
+    </div>
+
+    <div class="card">
+      <h2><svg class="ic"><use href="#i-log-in"/></svg>加入房间</h2>
+      <p class="desc">通常不需要来这里——直接点开房主分享的链接即可自动进房。</p>
+      <label for="joinRoom">房间号</label>
+      <input id="joinRoom" type="text" maxlength="12" placeholder="例如：a1b2c3" autocomplete="off" />
+      <label for="joinCode">邀请码（链接打不开时手动输入）</label>
+      <input id="joinCode" type="text" maxlength="6" placeholder="6 位邀请码" autocomplete="off" />
+      <label for="joinName">你的昵称</label>
+      <input id="joinName" type="text" maxlength="24" placeholder="例如：小红" autocomplete="nickname" />
+      <button id="joinBtn" class="join" aria-label="凭房间号和邀请码加入房间">加入房间</button>
+    </div>
+
+    <p id="msg" role="status" aria-live="polite"></p>
+
+    <p class="foot">
+      进入房间后房主可从 OpenList 媒体库选片；播放、暂停、进度、倍速、换片由房主统一控制。<br />
+      房间成员令牌存于会话存储，过期后自动回到本页重新加入。
+    </p>
+  </main>
+
+  <script type="module" src="/src/lobby-main.ts"></script>
+</body>
+</html>
