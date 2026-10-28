@@ -25,7 +25,7 @@ export interface MediaAdapter {
   pause(): void;
   seek(targetMs: number): void;
   setRate(rate: number): void;
-  /** 换片（load 命令）。clock 模式可为空实现。 */
+  /** 切换视频（load 命令）。clock 模式可为空实现。 */
   load?(mediaId: string, meta: MediaMeta | null): Promise<void> | void;
   /** 当前是否已加载媒体（心跳/命令前检查）。 */
   hasMedia?(): boolean;
@@ -354,7 +354,7 @@ export class SyncClient {
     this.currentState = state;
 
     if (state.mediaId && state.mediaId !== this.appliedMediaId) {
-      // 换片（S04）：先换源再对齐位置；旧片的任何迟到状态已被 isNewerState 挡掉。
+      // 切换视频（S04）：先换源再对齐位置；旧视频的任何迟到状态已被 isNewerState 挡掉。
       if (media.load) {
         try {
           void Promise.resolve(media.load(state.mediaId, state.mediaMeta)).catch((err) => {

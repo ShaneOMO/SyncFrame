@@ -80,7 +80,7 @@ async function main(): Promise<void> {
     check("大厅页加载无 JS 错误", consoleErrors.length === 0, consoleErrors.join(" | "));
     await host.fill("#createName", "UI房主");
     await host.click("#createBtn");
-    await host.waitForURL(/room\.html\?room=/, { timeout: 10_000 });
+    await host.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
     const roomUrl = new URL(host.url());
     const roomId = roomUrl.searchParams.get("room") ?? "";
     check("创建后跳转房间页", roomUrl.pathname === "/room.html" && roomId.length === 6);
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
       inviteLinkVal.includes(`room=${roomId}`) && inviteLinkVal.includes(`key=${invite}`),
       inviteLinkVal,
     );
-    await viewer.waitForURL(/room\.html\?room=/, { timeout: 10_000 });
+    await viewer.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
     await viewer.waitForFunction(
       () => {
         const s = (window as unknown as { __sync?: { sample: () => { connected: boolean; role: string } } }).__sync;

@@ -3,13 +3,13 @@
  *
  * 设计要点（对照 docs/feasibility-validation-plan.md §4.5/§4.6 与 Movi Watch Party 审计）：
  * - WebSocket 只传播放状态，永不传媒体字节，也不传原始 URL——广播的是不透明 mediaId。
- * - 所有状态由服务端定序：revision 单调递增；mediaRevision 在换片时递增，
- *   用于丢弃「换片前的旧消息延迟到达」（S14）。
+ * - 所有状态由服务端定序：revision 单调递增；mediaRevision 在切换视频时递增，
+ *   用于丢弃「切换前的旧消息延迟到达」（S14）。
  * - 所有状态带 serverTimeMs（服务端权威时钟戳），跟随端据此推算「房主此刻应在哪」。
  * - 服务端时钟戳用单调时钟防护：系统时钟回拨不会让 serverTimeMs 倒退。
  */
 
-/** 媒体元信息：host 换片时随状态广播，观众展示用；不含任何 URL。 */
+/** 媒体元信息：host 切换视频时随状态广播，观众展示用；不含任何 URL。 */
 export interface MediaMeta {
   name: string;
   size?: number;
@@ -21,7 +21,7 @@ export interface RoomState {
   roomId: string;
   /** 单调递增，每次状态变更 +1，用于乱序/过期消息丢弃（S14）。 */
   revision: number;
-  /** 换片时 +1；mediaRevision 更大的状态总是胜出。 */
+  /** 切换视频时 +1；mediaRevision 更大的状态总是胜出。 */
   mediaRevision: number;
   /** 不透明媒体标识（P3 将映射到 OpenList 路径；Spike 里直接是路径字符串）。 */
   mediaId: string;

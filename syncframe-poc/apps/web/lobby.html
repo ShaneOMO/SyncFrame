@@ -3,61 +3,163 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='5' fill='%230e1013' stroke='%234c8dff'/%3E%3Cpath d='M10 8.2v7.6L16 12z' fill='%234c8dff'/%3E%3C/svg%3E" />
-  <title>SyncFrame 观影室 · 大厅（P3）</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='5' fill='%230A0A0B' stroke='%230A84FF'/%3E%3Cpath d='M10 8.2v7.6L16 12z' fill='%230A84FF'/%3E%3C/svg%3E" />
+  <title>SyncFrame · 和朋友同频观影</title>
   <link rel="stylesheet" href="/src/styles/tokens.css" />
   <link rel="stylesheet" href="/src/styles/components.css" />
   <style>
-    /* ── 大厅页专属：顶栏 + 居中窄容器 ── */
+    /* ── 大厅页专属：毛玻璃顶栏 + 单信息首屏 ── */
     body { padding: 0; display: block; }
 
     .topnav {
+      position: sticky; top: 0; z-index: 20;
       display: flex; align-items: center; gap: var(--sp-2);
-      max-width: var(--container); margin: 0 auto;
-      padding: var(--sp-4) 20px;
-      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      border-bottom: 0.5px solid var(--border);
+      background: rgba(10, 10, 11, 0.72);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
     }
+    .topnav::before {
+      content: ""; position: absolute; inset: 0;
+      max-width: var(--container); margin: 0 auto; pointer-events: none;
+    }
+    .topnav > * { position: relative; max-width: var(--container); }
     .topnav .brand {
-      display: inline-flex; align-items: center; gap: var(--sp-2);
-      font-size: var(--fs-title); font-weight: 700; letter-spacing: 0.3px;
+      display: inline-flex; align-items: center; gap: 10px;
+      font-size: var(--fs-body); font-weight: 600; letter-spacing: 0.3px;
       color: var(--text); text-decoration: none;
     }
-    .topnav .brand:hover { text-decoration: none; }
+    .topnav .brand:hover { text-decoration: none; opacity: 0.85; }
     .topnav .brand .logo-mark { color: var(--accent); display: inline-flex; }
     .topnav nav { margin-left: auto; display: flex; align-items: center; gap: var(--sp-4); }
-    .topnav nav a { color: var(--text-dim); font-size: var(--fs-small); }
-    .topnav nav a:hover { color: var(--text); text-decoration: none; }
 
     main {
       width: 100%; max-width: var(--container-narrow);
-      margin: 0 auto; padding: var(--sp-8) 20px var(--sp-6);
+      margin: 0 auto; padding: 88px 24px var(--sp-8);
     }
-    .page-head { margin-bottom: var(--sp-6); }
-    .page-head h1 small { color: var(--text-dim); font-weight: 400; font-size: var(--fs-small); margin-left: var(--sp-2); }
-    .page-head .sub { color: var(--text-dim); margin: var(--sp-1) 0 0; font-size: var(--fs-small); }
 
-    .card { transition: border-color 0.12s; }
-    .card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-hover); }
-    .card h2 { display: flex; align-items: center; gap: var(--sp-2); font-size: 15px; }
+    /* ── 首屏：只传达一个核心信息 ── */
+    .hero { text-align: center; margin-bottom: 56px; }
+    .hero .eyebrow {
+      display: inline-flex; align-items: center; gap: 6px;
+      color: var(--accent); font-size: var(--fs-caption); font-weight: 600;
+      letter-spacing: 0.6px; text-transform: uppercase;
+      margin-bottom: var(--sp-4);
+    }
+    .hero h1 {
+      font-size: 34px; line-height: 1.2; font-weight: 700;
+      letter-spacing: -0.5px; margin: 0 0 var(--sp-3);
+    }
+    .hero .sub {
+      color: var(--text-dim); font-size: var(--fs-body);
+      margin: 0 auto; max-width: 40ch; line-height: 1.7;
+    }
+
+    .card h2 { display: flex; align-items: center; gap: var(--sp-2); }
     .card h2 .ic { color: var(--text-dim); }
     .card .desc { color: var(--text-dim); font-size: var(--fs-small); margin: calc(-1 * var(--sp-1)) 0 var(--sp-4); }
 
-    label { display: block; color: var(--text-dim); font-size: var(--fs-caption); margin: var(--sp-3) 0 var(--sp-1); }
-    input { width: 100%; padding: 8px 10px; }
-    button { margin-top: var(--sp-4); width: 100%; padding: 9px 12px; font-weight: 600; }
+    label { display: block; color: var(--text-dim); font-size: var(--fs-caption); font-weight: 500; margin: var(--sp-3) 0 var(--sp-1); }
+    input { width: 100%; }
+    main .card button:not(.ghost):not(.icon) { margin-top: var(--sp-4); width: 100%; padding: 10px 16px; font-weight: 600; }
 
     /* 状态行：Dot + 文本（#msg 由 lobby-main.ts 写 textContent，纯 CSS 呈现状态点） */
-    #msg { min-height: 20px; margin: var(--sp-4) 0 0; font-size: var(--fs-small); color: var(--text-dim); }
+    #msg { min-height: 20px; margin: var(--sp-4) 0 0; font-size: var(--fs-small); color: var(--text-dim); text-align: center; }
     #msg:not(:empty)::before {
-      content: ""; display: inline-block; width: 8px; height: 8px;
+      content: ""; display: inline-block; width: 7px; height: 7px;
       border-radius: var(--radius-pill); background: var(--warning);
       margin-right: var(--sp-2); vertical-align: 1px;
     }
 
-    .foot { color: var(--text-faint); font-size: var(--fs-caption); margin-top: var(--sp-6); line-height: 1.7; }
+    .foot {
+      color: var(--text-faint); font-size: var(--fs-caption);
+      margin-top: var(--sp-8); line-height: 1.8; text-align: center;
+      padding-top: var(--sp-6); border-top: 0.5px solid var(--border);
+    }
+
+    /* ── 房间列表 ── */
+    .room-count { color: var(--text-faint); font-size: var(--fs-caption); font-weight: 400; margin-left: auto; }
+    #roomList {
+      border: 0.5px solid var(--border); border-radius: var(--radius);
+      background: var(--bg); margin-top: var(--sp-2); overflow: hidden;
+    }
+    .room-row {
+      display: flex; align-items: center; gap: var(--sp-2);
+      padding: 10px var(--sp-3);
+      border-bottom: 0.5px solid var(--border);
+      transition: background var(--dur) var(--ease);
+    }
+    .room-row:hover { background: var(--panel-2); }
+    .room-row:last-child { border-bottom: 0; }
+    .room-id {
+      font-family: var(--font-mono); font-weight: 600; color: var(--accent);
+      cursor: pointer; background: none; border: 0; padding: 2px 6px; margin: -2px 0;
+      border-radius: 6px; font-size: var(--fs-body);
+      transition: background var(--dur) var(--ease);
+    }
+    .room-id:hover { background: var(--accent-soft); text-decoration: none; }
+    .room-host { color: var(--text); }
+    .room-meta { color: var(--text-dim); font-size: var(--fs-caption); margin-left: auto; flex: 0 0 auto; }
+    .browse-empty { padding: 22px; text-align: center; color: var(--text-faint); font-size: var(--fs-small); }
+    #refreshRooms { width: auto; margin-top: var(--sp-3); padding: 5px 14px; display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); }
+    #refreshRooms .ic { width: 13px; height: 13px; }
+
+    /* ── 登录按钮（顶栏） ── */
+    .nav-login { width: auto; margin-top: 0; padding: 6px 14px; display: inline-flex; align-items: center; gap: 6px; font-weight: 500; font-size: var(--fs-small); }
+    .nav-login .ic { width: 14px; height: 14px; }
+
+    /* ── 弹窗 ── */
+    .modal {
+      position: fixed; inset: 0; z-index: 50; display: flex;
+      align-items: flex-start; justify-content: center; padding: 10vh 16px 16px;
+      background: rgba(0, 0, 0, 0.6);
+      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(8px);
+    }
+    .modal[hidden] { display: none; }
+    .modal-card {
+      width: 100%; max-width: 420px; background: var(--panel);
+      border: 0.5px solid var(--border-strong); border-radius: var(--radius-lg);
+      padding: var(--sp-6); box-shadow: var(--shadow-pop);
+      max-height: 80vh; overflow-y: auto;
+    }
+    .modal-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-4); }
+    .modal-head h2 { font-size: var(--fs-title); display: flex; align-items: center; gap: var(--sp-2); flex: 1; }
+    .modal-head button.icon { width: 30px; height: 30px; padding: 0; margin-top: 0; }
+    .tabs {
+      display: flex; gap: var(--sp-1); padding: 3px;
+      background: var(--panel-2); border-radius: var(--radius-pill);
+      margin-bottom: var(--sp-4);
+    }
+    .tab { flex: 1; margin-top: 0; padding: 6px 0; font-weight: 500; font-size: var(--fs-small); border: 0; background: transparent; }
+    .tab.active { background: var(--panel-hover); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
+    #authSubmit { width: 100%; margin-top: var(--sp-4); }
+    #authMsg, #providerMsg { min-height: 18px; font-size: var(--fs-caption); color: var(--warning); margin: var(--sp-2) 0 0; }
+
+    /* provider 配置 */
+    .provider-who { font-size: var(--fs-small); color: var(--text-dim); margin: 0 0 var(--sp-3); }
+    .provider-who b { color: var(--text); }
+    #providerPanel h3 { font-size: var(--fs-caption); font-weight: 600; color: var(--text-dim); letter-spacing: 0.4px; text-transform: uppercase; display: flex; align-items: center; gap: 6px; margin: var(--sp-5) 0 var(--sp-2); }
+    #providerList { display: flex; flex-direction: column; gap: 6px; }
+    .provider-row {
+      display: flex; align-items: center; gap: var(--sp-2);
+      border: 0.5px solid var(--border); border-radius: var(--radius);
+      padding: 8px var(--sp-3); font-size: var(--fs-small);
+      transition: border-color var(--dur) var(--ease);
+    }
+    .provider-row:hover { border-color: var(--border-strong); }
+    .provider-row .kind { font-size: 11px; color: var(--text-dim); border: 0.5px solid var(--border); border-radius: var(--radius-pill); padding: 1px 8px; }
+    .provider-row .url { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .provider-row button { margin: 0 0 0 auto; padding: 3px 12px; font-size: var(--fs-caption); }
+    .provider-form { display: flex; flex-direction: column; gap: 8px; }
+    .provider-form button { margin-top: 2px; }
+    .provider-hint { color: var(--text-faint); font-size: var(--fs-caption); margin: var(--sp-2) 0; line-height: 1.6; }
+    #logoutBtn { margin-top: var(--sp-5); padding: 8px 0; width: 100%; }
 
     @media (max-width: 560px) {
-      main { padding-top: var(--sp-6); }
+      main { padding-top: var(--sp-8); }
+      .hero h1 { font-size: 26px; }
     }
   </style>
 </head>
@@ -67,8 +169,54 @@
     <defs>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
       <symbol id="i-log-in" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></symbol>
+      <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></symbol>
+      <symbol id="i-video" viewBox="0 0 24 24"><path d="m16 13 5.2 3.1V7.9L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
     </defs>
   </svg>
+
+  <!-- 登录 / provider 配置弹窗 -->
+  <div id="authModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="账户登录与视频 provider 配置">
+      <div class="modal-head">
+        <h2 id="authTitle"><svg class="ic"><use href="#i-user"/></svg>登录账户</h2>
+        <button id="authClose" class="icon ghost" aria-label="关闭"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+
+      <!-- 未登录：登录 / 注册 -->
+      <div id="authForms">
+        <div class="tabs">
+          <button id="tabLogin" class="tab active">登录</button>
+          <button id="tabRegister" class="tab">注册</button>
+        </div>
+        <label for="authUsername">用户名</label>
+        <input id="authUsername" type="text" maxlength="24" autocomplete="username" />
+        <label for="authPassword">密码</label>
+        <input id="authPassword" type="password" maxlength="64" autocomplete="current-password" />
+        <button id="authSubmit" class="primary">登录</button>
+        <p id="authMsg" role="status" aria-live="polite"></p>
+      </div>
+
+      <!-- 已登录：provider 配置 -->
+      <div id="providerPanel" hidden>
+        <p class="provider-who">当前用户：<b id="providerUser"></b> <span>（凭据仅存服务端内存）</span></p>
+        <h3><svg class="ic"><use href="#i-video"/></svg>我的视频 provider</h3>
+        <div id="providerList"></div>
+        <h3>添加 OpenList provider</h3>
+        <div class="provider-form">
+          <input id="pLabel" type="text" maxlength="24" placeholder="名称（如：家里 OpenList）" />
+          <input id="pBaseUrl" type="text" placeholder="https://openlist.example.com" />
+          <input id="pUsername" type="text" maxlength="64" placeholder="OpenList 用户名" autocomplete="off" />
+          <input id="pPassword" type="password" maxlength="64" placeholder="OpenList 密码" autocomplete="new-password" />
+          <button id="pAdd">添加 provider</button>
+        </div>
+        <p class="provider-hint">「直链」provider 无需配置：进房间后可直接粘贴视频地址添加。</p>
+        <button id="logoutBtn" class="danger">退出登录</button>
+        <p id="providerMsg" role="status" aria-live="polite"></p>
+      </div>
+    </div>
+  </div>
 
   <header class="topnav">
     <a class="brand" href="/lobby.html" aria-label="SyncFrame 首页">
@@ -78,19 +226,29 @@
       SyncFrame
     </a>
     <nav>
-      <a href="/" title="P1 原始文件播放验证页（无房间逻辑）">播放验证页</a>
+      <button id="loginBtn" class="ghost nav-login"><svg class="ic"><use href="#i-user"/></svg><span id="loginBtnText">登录</span></button>
     </nav>
   </header>
 
   <main>
-    <div class="page-head">
-      <h1>SyncFrame 观影室 <small>P3 最小 MVP · 房间鉴权</small></h1>
-      <p class="sub">创建房间后把链接分享给朋友；对方点开链接即进房，无需 OpenList 账号。</p>
+    <!-- 首屏：一个核心信息 + 一个主行动 -->
+    <div class="hero">
+      <span class="eyebrow">SyncFrame</span>
+      <h1>和朋友，同频看同一部影片</h1>
+      <p class="sub">创建一个房间，把链接发给朋友；点开即进房，播放、暂停、进度完全同步。</p>
+    </div>
+
+    <!-- 当前实例已有的同步房间 -->
+    <div class="card" id="roomListCard">
+      <h2><svg class="ic"><use href="#i-video"/></svg>同步房间 <span class="room-count" id="roomCount"></span></h2>
+      <p class="desc">本实例当前活跃的房间；游客凭邀请码加入，点击房间号可快速填入下方加入表单。</p>
+      <div id="roomList"><div class="browse-empty">加载中…</div></div>
+      <button id="refreshRooms" class="ghost small"><svg class="ic"><use href="#i-refresh"/></svg>刷新</button>
     </div>
 
     <div class="card">
       <h2><svg class="ic"><use href="#i-plus"/></svg>创建房间</h2>
-      <p class="desc">成为房主：可从 OpenList 媒体库选片，统一控制播放、暂停、进度、倍速与换片。</p>
+      <p class="desc">成为房主：可从自己配置的 provider（OpenList / 直链）添加视频，统一控制播放、暂停、进度与倍速。</p>
       <label for="createName">你的昵称</label>
       <input id="createName" type="text" maxlength="24" placeholder="例如：小明" autocomplete="nickname" />
       <button id="createBtn" class="primary" aria-label="创建房间并成为房主">创建房间</button>
@@ -111,7 +269,7 @@
     <p id="msg" role="status" aria-live="polite"></p>
 
     <p class="foot">
-      进入房间后房主可从 OpenList 媒体库选片；播放、暂停、进度、倍速、换片由房主统一控制。<br />
+      进入房间后房主可手动添加直链视频或从 OpenList 媒体库添加；播放、暂停、进度、倍速由房主统一控制。<br />
       房间成员令牌存于会话存储，过期后自动回到本页重新加入。
     </p>
   </main>

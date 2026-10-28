@@ -4,8 +4,10 @@ node_modules/
 
 # 环境变量与密钥
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 
 # 构建产物
 dist/

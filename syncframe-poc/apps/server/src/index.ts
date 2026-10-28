@@ -1,34 +1,38 @@
 /**
- * P3 验证后端：房间鉴权 + mediaId 受控映射 + OpenList 选片。
+ * SyncFrame 后端：房间鉴权 + mediaId 受控映射 + provider 媒体库（P3/P4）。
  *
  * 接口：
  *  - GET  /api/health                                存活检查
+ *  - POST /api/auth/register | /api/auth/login        账户注册/登录（PoC 内存态）→ userToken
+ *  - GET  /api/me                  (Bearer userToken)  当前用户 + provider 列表（不含密码）
+ *  - PUT  /api/me/providers        (Bearer userToken)  全量替换 provider 配置
+ *  - GET  /api/rooms                                   公开房间列表（大厅）
  *  - POST /api/rooms            {name}               → {roomId, inviteCode, memberToken, clientId, role}
  *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}
  *                                                    → {memberToken, clientId, role}（clientId=房主时恢复 host）
  *  - GET  /api/browse?path=&page=                    列目录（仅房主；观众 403）
  *  - GET  /api/search?keywords=&parent=&page=        搜索（仅房主）
- *  - POST /api/rooms/:id/media  {path}               注册 OpenList 路径为不透明 mediaId（仅房主），
- *                                                    自动注册同目录外挂字幕（srt/ass/ssa/vtt）
+ *  - POST /api/rooms/:id/media  注册媒体（仅房主）。三种形态：
+ *      {path}                                服务端环境变量 OpenList（默认）
+ *      {provider:"direct", name, url}        直链（校验 http/https、禁带凭证）
+ *      {provider:<id>, path} + X-User-Token  房主私有 OpenList provider（凭用户令牌鉴权）
+ *    自动注册同目录外挂字幕（srt/ass/ssa/vtt）
  *  - GET  /api/rooms/:id/media/:mediaId/grant        签发短期媒体访问凭证（房间成员；跨房间 404）
  *  - GET  /api/resolve?path=&route=raw|proxy         P1 遗留：直接解析（无房间授权，仅验证用）
- *  - POST /api/report | /api/sync-report             P1/P2 指标落盘
  *
- *  - WS   /ws?room=<id>&token=<memberToken>          同步房间（P3 起凭成员令牌入场）
+ *  - WS   /ws?room=<id>&token=<memberToken>          同步房间（凭成员令牌入场）
  *
  * 令牌缓存于内存；OpenList 管理令牌只存在于服务端；
  * 审计日志见 [audit] 行：只含 roomId/mediaId/clientId/动作，不含令牌、签名 URL 或文件路径。
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { OpenListClient } from "@syncframe/openlist-adapter";
 import { RoomManager } from "./sync-rooms.ts";
 import { RoomRegistry, tokenFingerprint } from "./room-auth.ts";
 import type { MemberRecord } from "./room-auth.ts";
+import { UserAccounts } from "./user-accounts.ts";
 
 const PORT = Number(process.env.SERVER_PORT ?? 8787);
 const baseUrl = process.env.OPENLIST_BASE_URL;
@@ -41,22 +45,32 @@ if (!baseUrl || !username || !password) {
   console.warn("警告: 未配置 OPENLIST_BASE_URL / USERNAME / PASSWORD，媒体相关接口不可用（同步功能不受影响）");
 }
 
-// 项目根（apps/server 上三级）
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const reportDir = path.join(repoRoot, "reports/playback-raw");
-const syncReportDir = path.join(repoRoot, "reports/sync-raw");
-await mkdir(reportDir, { recursive: true });
-await mkdir(syncReportDir, { recursive: true });
-
 // P3：房间注册表（鉴权 + 媒体受控映射 + 授权缓存）。审计日志不含令牌/URL/路径。
-const registry = new RoomRegistry({
-  onAudit: (ev) => {
+const registry = new RoomRegistry({  onAudit: (ev) => {
     const fp = ev.clientId ? ` member=${ev.clientId}` : "";
     const mid = ev.mediaId ? ` media=${ev.mediaId}` : "";
     const detail = ev.detail ? ` ${ev.detail}` : "";
     console.log(`[audit] room=${ev.roomId}${fp}${mid} action=${ev.action}${detail}`);
   },
 });
+
+// P4：用户账户（PoC 内存存储）+ 房主私有 OpenList provider 的客户端缓存（凭据不出服务端）。
+const accounts = new UserAccounts();
+const userClients = new Map<string, { client: OpenListClient; baseUrl: string }>();
+
+async function userOpenListClient(username: string, providerId: string): Promise<{ client: OpenListClient; baseUrl: string } | null> {
+  const user = accounts.getUser(username);
+  const cfg = user?.providers.get(providerId);
+  if (!cfg || cfg.kind !== "openlist") return null;
+  const key = `${username}:${providerId}`;
+  let cached = userClients.get(key);
+  if (!cached) {
+    cached = { client: new OpenListClient({ baseUrl: cfg.baseUrl, timeoutMs: 15_000 }), baseUrl: cfg.baseUrl };
+    await cached.client.login(cfg.username, cfg.password);
+    userClients.set(key, cached);
+  }
+  return cached;
+}
 
 // P2：同步房间。延迟注入用于仿真 WAN（单向延迟=RTT/2），见 tests/sync。
 const roomManager = new RoomManager({
@@ -149,16 +163,19 @@ function requireMember(
 
 // ── OpenList 解析（服务端代理解析，OpenList 令牌不出服务端）────────────────
 
-async function resolveOpenListUrl(filePath: string, userAgent: string): Promise<{
+async function resolveWithClient(
+  olClient: OpenListClient,
+  baseUrl: string,
+  filePath: string,
+  userAgent: string,
+): Promise<{
   name: string;
   size: number;
   url: string;
   related: { name: string; size: number }[];
 }> {
-  await ensureLogin();
-  if (!client) throw new Error("OpenList client 未初始化");
-  const detail = await client.getFile(filePath, { userAgent: userAgent || "SyncFrame-PoC/0.1" });
-  const proxy = `${baseUrl!.replace(/\/+$/, "")}/d${filePath.startsWith("/") ? "" : "/"}${filePath}${
+  const detail = await olClient.getFile(filePath, { userAgent: userAgent || "SyncFrame-PoC/0.1" });
+  const proxy = `${baseUrl.replace(/\/+$/, "")}/d${filePath.startsWith("/") ? "" : "/"}${filePath}${
     detail.sign ? `?sign=${encodeURIComponent(detail.sign)}` : ""
   }`;
   // 优先 raw_url；服务端跟随重定向链得到最终地址（CORS/签名敏感规避，见 P1）。
@@ -170,6 +187,17 @@ async function resolveOpenListUrl(filePath: string, userAgent: string): Promise<
     url: finalUrl,
     related: (detail.related ?? []).map((r) => ({ name: r.name, size: r.size })),
   };
+}
+
+async function resolveOpenListUrl(filePath: string, userAgent: string): Promise<{
+  name: string;
+  size: number;
+  url: string;
+  related: { name: string; size: number }[];
+}> {
+  await ensureLogin();
+  if (!client) throw new Error("OpenList client 未初始化");
+  return resolveWithClient(client, baseUrl!, filePath, userAgent);
 }
 
 /** 重定向地址基本防护：仅 http/https、不允许携带凭证、限制跳数。
@@ -204,6 +232,61 @@ async function resolveRedirectChain(url: string): Promise<{ url: string; redirec
     }
   }
   return { url: current, redirectCount: 5 };
+}
+
+// ── P4：账户 / provider 配置 / 公开房间列表 ───────────────────────────────
+
+async function handleRegister(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
+  const parsed = readJsonBody(body);
+  const username = typeof parsed.username === "string" ? parsed.username : "";
+  const password = typeof parsed.password === "string" ? parsed.password : "";
+  const result = accounts.register(username, password);
+  if (!result.ok) {
+    sendJson(res, 400, { error: result.error });
+    return;
+  }
+  sendJson(res, 200, { userToken: result.token, username: username.trim() });
+}
+
+async function handleLogin(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
+  const parsed = readJsonBody(body);
+  const token = accounts.login(
+    typeof parsed.username === "string" ? parsed.username : "",
+    typeof parsed.password === "string" ? parsed.password : "",
+  );
+  if (!token) {
+    sendJson(res, 401, { error: "用户名或密码错误" });
+    return;
+  }
+  sendJson(res, 200, { userToken: token, username: (typeof parsed.username === "string" ? parsed.username : "").trim() });
+}
+
+function handleMe(req: IncomingMessage, res: ServerResponse): void {
+  const username = accounts.authenticate(bearerToken(req));
+  if (!username) {
+    sendJson(res, 401, { error: "未登录或登录已过期" });
+    return;
+  }
+  sendJson(res, 200, { username, providers: accounts.listProviders(username) });
+}
+
+async function handleSetProviders(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
+  const username = accounts.authenticate(bearerToken(req));
+  if (!username) {
+    sendJson(res, 401, { error: "未登录或登录已过期" });
+    return;
+  }
+  const parsed = readJsonBody(body);
+  const result = accounts.setProviders(username, parsed.providers);
+  if (!result.ok) {
+    sendJson(res, 400, { error: result.error });
+    return;
+  }
+  // 凭据变更后丢弃该用户的 OpenList 客户端缓存（下次 grant 重新登录）。
+  for (const key of [...userClients.keys()]) {
+    if (key.startsWith(`${username}:`)) userClients.delete(key);
+  }
+  sendJson(res, 200, { providers: accounts.listProviders(username) });
 }
 
 // ── P1 遗留：无房间授权的直解析（仅播放能力验证用，MVP 观影走 grant 链路）──
@@ -382,11 +465,61 @@ async function handleRegisterMedia(
     sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
     return;
   }
+  const provider = typeof parsed.provider === "string" ? parsed.provider.trim() : "";
+  // 直链 provider：手动添加 {name, url}，注册即最终地址。
+  if (provider === "direct") {
+    const name = (typeof parsed.name === "string" ? parsed.name.trim() : "").slice(0, 128) || "直链视频";
+    const url = typeof parsed.url === "string" ? parsed.url.trim() : "";
+    if (!url) {
+      sendJson(res, 400, { error: "缺少 url" });
+      return;
+    }
+    try {
+      const result = registry.registerMedia(roomId, member, "", { name, size: 0 }, [], { provider: "直链", directUrl: url });
+      if ("error" in result) {
+        sendJson(res, 403, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, { mediaId: result.mediaId, name, size: 0, related: result.related, provider: "直链" });
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
   const filePath = typeof parsed.path === "string" ? parsed.path : "";
   if (!filePath) {
     sendJson(res, 400, { error: "缺少 path 参数" });
     return;
   }
+  // 房主私有 OpenList provider：凭 X-User-Token 确认身份，用该用户的凭据解析（P4）。
+  if (provider) {
+    const username = accounts.authenticate(
+      typeof req.headers["x-user-token"] === "string" ? req.headers["x-user-token"] : null,
+    );
+    const ol = username ? await userOpenListClient(username, provider) : null;
+    if (!username || !ol) {
+      sendJson(res, 403, { error: "provider 不存在或不属于当前登录用户" });
+      return;
+    }
+    const user = accounts.getUser(username)!;
+    try {
+      const detail = await resolveWithClient(ol.client, ol.baseUrl, filePath, "SyncFrame-PoC/0.1");
+      const result = registry.registerMedia(roomId, member, filePath, { name: detail.name, size: detail.size }, detail.related, {
+        provider: user.providers.get(provider)!.label,
+        providerOwner: username,
+        providerId: provider,
+      });
+      if ("error" in result) {
+        sendJson(res, 403, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, { mediaId: result.mediaId, name: detail.name, size: detail.size, related: result.related, provider: user.providers.get(provider)!.label });
+    } catch (err) {
+      sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
+  // 默认：服务端环境变量配置的 OpenList（P3 既有行为）。
   if (!filePath.startsWith("/") || filePath.split("/").includes("..")) {
     sendJson(res, 400, { error: "非法路径" });
     return;
@@ -402,7 +535,7 @@ async function handleRegisterMedia(
       sendJson(res, 403, { error: result.error });
       return;
     }
-    sendJson(res, 200, { mediaId: result.mediaId, name: detail.name, size: detail.size, related: result.related });
+    sendJson(res, 200, { mediaId: result.mediaId, name: detail.name, size: detail.size, related: result.related, provider: "OpenList" });
   } catch (err) {
     sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
   }
@@ -434,9 +567,16 @@ async function handleGrant(
     return;
   }
   try {
-    const grant = await registry.grant(roomId, mediaId, member, (entry) =>
-      resolveOpenListUrl(entry.path, req.headers["user-agent"] ?? "SyncFrame-PoC/0.1"),
-    );
+    const grant = await registry.grant(roomId, mediaId, member, (entry) => {
+      // 私有 OpenList provider：用注册者（房主）的凭据解析；默认走服务端配置的 OpenList。
+      if (entry.providerOwner && entry.providerId) {
+        return userOpenListClient(entry.providerOwner, entry.providerId).then((ol) => {
+          if (!ol) throw new Error("provider 不可用");
+          return resolveWithClient(ol.client, ol.baseUrl, entry.path, req.headers["user-agent"] ?? "SyncFrame-PoC/0.1");
+        });
+      }
+      return resolveOpenListUrl(entry.path, req.headers["user-agent"] ?? "SyncFrame-PoC/0.1");
+    });
     if (!grant) {
       // 跨房间/未注册 mediaId：404，不暴露存在性（P3 通过门槛：不能越权访问其他媒体）。
       sendJson(res, 404, { error: "媒体不存在或未授权" });
@@ -445,30 +585,6 @@ async function handleGrant(
     sendJson(res, 200, grant);
   } catch (err) {
     sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
-  }
-}
-
-async function handleReport(_req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
-  try {
-    const parsed = JSON.parse(body);
-    const file = path.join(reportDir, `playback-${Date.now()}.json`);
-    await writeFile(file, JSON.stringify(parsed, null, 2), "utf-8");
-    sendJson(res, 200, { saved: file });
-  } catch (err) {
-    sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
-  }
-}
-
-/** P2：接收浏览器/仿真端上传的同步漂移采样，落盘 reports/sync-raw/。 */
-async function handleSyncReport(_req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
-  try {
-    const parsed = JSON.parse(body);
-    const clientId = typeof parsed.clientId === "string" ? parsed.clientId.replace(/[^\w-]/g, "").slice(0, 32) : "unknown";
-    const file = path.join(syncReportDir, `sync-${Date.now()}-${clientId}.json`);
-    await writeFile(file, JSON.stringify(parsed, null, 2), "utf-8");
-    sendJson(res, 200, { saved: file });
-  } catch (err) {
-    sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -523,6 +639,17 @@ const server = createServer(async (req, res) => {
       });
     } else if (url.pathname === "/api/rooms" && req.method === "POST") {
       await handleCreateRoom(req, res, await readBody(req));
+    } else if (url.pathname === "/api/rooms" && req.method === "GET") {
+      // P4 大厅房间列表（公开摘要：房间号/房主昵称/人数/视频数）。
+      sendJson(res, 200, { rooms: registry.listRooms() });
+    } else if (url.pathname === "/api/auth/register" && req.method === "POST") {
+      await handleRegister(req, res, await readBody(req));
+    } else if (url.pathname === "/api/auth/login" && req.method === "POST") {
+      await handleLogin(req, res, await readBody(req));
+    } else if (url.pathname === "/api/me" && req.method === "GET") {
+      handleMe(req, res);
+    } else if (url.pathname === "/api/me/providers" && req.method === "PUT") {
+      await handleSetProviders(req, res, await readBody(req));
     } else if (url.pathname.startsWith("/api/rooms/") && req.method === "POST" && url.pathname.endsWith("/join")) {
       if (!rateLimit("join", clientIp(req))) {
         sendJson(res, 429, { error: "尝试过于频繁，请稍后再试" });
@@ -548,10 +675,6 @@ const server = createServer(async (req, res) => {
       await handleGrant(req, res, parts[3], parts[5]);
     } else if (url.pathname === "/api/resolve" && req.method === "GET") {
       await handleResolve(req, res, url);
-    } else if (url.pathname === "/api/report" && req.method === "POST") {
-      await handleReport(req, res, await readBody(req));
-    } else if (url.pathname === "/api/sync-report" && req.method === "POST") {
-      await handleSyncReport(req, res, await readBody(req));
     } else {
       sendJson(res, 404, { error: "not found" });
     }
@@ -601,11 +724,10 @@ const registrySweep = setInterval(() => {
 registrySweep.unref();
 
 server.listen(PORT, () => {
-  console.log(`验证后端已启动: http://localhost:${PORT}`);
-  console.log(`  POST /api/rooms | /api/rooms/:id/join   （P3 房间鉴权）`);
-  console.log(`  GET  /api/browse?room=&path= | /api/search?room=&keywords=   （房主选片）`);
+  console.log(`SyncFrame 后端已启动: http://localhost:${PORT}`);
+  console.log(`  POST /api/auth/register | /api/auth/login | GET /api/me | PUT /api/me/providers   （P4 账户与 provider）`);
+  console.log(`  GET  /api/rooms | POST /api/rooms | /api/rooms/:id/join   （房间列表 + 房间鉴权）`);
+  console.log(`  GET  /api/browse?room=&path= | /api/search?room=&keywords=   （房主媒体库）`);
   console.log(`  POST /api/rooms/:id/media | GET .../media/:mediaId/grant   （受控映射 + 短期凭证）`);
-  console.log(`  GET  /api/resolve?path=<OpenList路径>&route=raw|proxy   （P1 遗留）`);
-  console.log(`  WS   /ws?room=<id>&token=<memberToken>   （P3 起凭成员令牌入场）`);
-  console.log(`  POST /api/report → ${reportDir} | /api/sync-report → ${syncReportDir}`);
+  console.log(`  WS   /ws?room=<id>&token=<memberToken>   （凭成员令牌入场）`);
 });

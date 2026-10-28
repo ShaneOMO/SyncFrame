@@ -278,7 +278,7 @@ export class Room {
       });
       return;
     }
-    if (!prev) return; // 还没有片源，非 load 命令无从依附
+    if (!prev) return; // 还没有媒体，非 load 命令无从依附
     switch (cmd.action) {
       case "play":
         this.publish({

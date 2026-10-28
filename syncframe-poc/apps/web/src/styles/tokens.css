@@ -1,42 +1,43 @@
 /* ─────────────────────────────────────────────────────────────
-   SyncFrame Design Tokens · Phase 2 基础层
-   中性灰 + 单一强调色（蓝）；语义色仅以「细边框 + 文字」出现，不做色块。
+   SyncFrame Design Tokens · Apple HIG × Vercel 深色体系
+   无彩色为主 + 单一强调色（#0A84FF）；语义色仅作「文字 + 细边框 + 低透明底色」。
    所有页面与组件必须引用此文件的变量，禁止再写死色值。
    ───────────────────────────────────────────────────────────── */
 
 :root {
   color-scheme: dark;
 
-  /* ── 背景层级（四层，靠明度分层，不靠彩色） ── */
-  --bg: #0e1013;          /* 页面底 */
-  --panel: #15181d;       /* 卡片 / 面板 */
-  --panel-2: #1c2027;     /* 按钮底、hover 底、输入框底 */
-  --panel-hover: #232932; /* hover 态 */
+  /* ── 背景层级（三层，靠明度分层） ── */
+  --bg: #0A0A0B;          /* 页面底 */
+  --panel: #141416;       /* 卡片 / 面板 */
+  --panel-2: #1C1C1F;     /* 输入框底、次级填充 */
+  --panel-hover: #242428; /* hover 底 */
 
-  /* ── 边框：细、低对比 ── */
-  --border: #262b34;
-  --border-strong: #333a46;
+  /* ── 细线分割（0.5px 发丝线，用 alpha 灰实现低对比） ── */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
 
-  /* ── 文字三级 ── */
-  --text: #e9ebef;        /* 正文 / 标题 */
-  --text-dim: #9aa3b2;    /* 辅助文字、标签、placeholder */
-  --text-faint: #6b7482;  /* 弱化信息（页脚、禁用） */
+  /* ── 文字三级（靠字重与颜色区分，不堆字号） ── */
+  --text: #F5F5F7;        /* 标题 / 正文 */
+  --text-dim: #98989D;    /* 辅助文字、标签 */
+  --text-faint: #6E6E73;  /* 弱化信息（页脚、placeholder、禁用） */
 
-  /* ── 强调色（全站唯一装饰色） ── */
-  --accent: #4c8dff;
-  --accent-hover: #6ba1ff;
-  --accent-contrast: #ffffff;
+  /* ── 强调色（全站唯一，面积 ≤10%） ── */
+  --accent: #0A84FF;
+  --accent-hover: #3395FF;
+  --accent-soft: rgba(10, 132, 255, 0.14);
+  --accent-contrast: #FFFFFF;
 
-  /* ── 语义色：仅用于文字 + 1px 边框 + 8% 底色 ── */
-  --success: #34c077;
-  --warning: #e5b64f;
-  --danger: #e5604c;
-  --success-border: #1d4431;
-  --warning-border: #4d4020;
-  --danger-border: #4d2b26;
+  /* ── 语义色：仅用于文字 + 细边框 + 低透明底色 ── */
+  --success: #30D158;
+  --warning: #FFD60A;
+  --danger: #FF453A;
+  --success-border: rgba(48, 209, 88, 0.32);
+  --warning-border: rgba(255, 214, 10, 0.28);
+  --danger-border: rgba(255, 69, 58, 0.30);
 
   /* ── 字体：Inter 优先（本机有则自动启用），否则系统栈 ──
-     三级层级：标题 17/600 · 正文 14/400 · 辅助 12-13/400 */
+     三级层级：标题 17/600 · 正文 14/400 · 辅助 12/400 */
   --font-sans: "Inter", "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
   --fs-title: 17px;
@@ -53,14 +54,18 @@
   --sp-6: 24px;
   --sp-8: 32px;
 
-  /* ── 圆角：两档 ── */
-  --radius: 8px;
+  /* ── 圆角：卡片 12px，控件 pill ── */
+  --radius: 12px;
   --radius-lg: 12px;
-  --radius-pill: 999px;   /* 仅 badge / chip / 圆形图标按钮 */
+  --radius-pill: 999px;
 
-  /* ── 阴影：只给浮层与 hover，禁止大面积重阴影 ── */
-  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--border);
-  --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.3);
+  /* ── 动效 ── */
+  --ease: cubic-bezier(0.32, 0.72, 0.24, 1);
+  --dur: 0.16s;
+
+  /* ── 阴影：只给浮层，禁止大面积重阴影 ── */
+  --shadow-pop: 0 16px 48px rgba(0, 0, 0, 0.55), 0 0 0 0.5px var(--border-strong);
+  --shadow-hover: 0 4px 16px rgba(0, 0, 0, 0.3);
 
   /* ── 布局 ── */
   --container: 1280px;

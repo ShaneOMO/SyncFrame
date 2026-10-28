@@ -1,5 +1,5 @@
 /**
- * P3 房间页主逻辑：房间鉴权会话 + 受控媒体链路 + OpenList 选片。
+ * P3 房间页主逻辑：房间鉴权会话 + 受控媒体链路 + OpenList 媒体库。
  *
  * 会话：成员令牌从 sessionStorage 恢复（大厅页写入）；缺失/过期 → 回大厅重新加入。
  * 媒体：WebSocket 只传播不透明 mediaId；客户端用成员令牌向
@@ -37,6 +37,43 @@ if (!roomId || !session) {
 const role = session.role;
 const memberToken = session.memberToken;
 const authHeaders = { Authorization: `Bearer ${memberToken}` };
+
+// P4：登录用户令牌（大厅页写入 localStorage），用于私有 provider 的媒体注册。
+interface LocalUser {
+  token: string;
+  username: string;
+}
+function loadUser(): LocalUser | null {
+  try {
+    const raw = localStorage.getItem("syncframe-user");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LocalUser;
+    return parsed.token && parsed.username ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+const localUser = loadUser();
+
+interface PublicProvider {
+  id: string;
+  kind: "openlist";
+  label: string;
+  baseUrl: string;
+  username: string;
+}
+
+async function fetchMyProviders(): Promise<PublicProvider[]> {
+  if (!localUser) return [];
+  try {
+    const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${localUser.token}` } });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { providers?: PublicProvider[] };
+    return body.providers ?? [];
+  } catch {
+    return [];
+  }
+}
 
 // 每房间稳定身份：来自会话（大厅 join 时服务端签发/复用）。
 const clientId = session.clientId;
@@ -99,6 +136,38 @@ const playerRef: { current: MoviElement } = {
 };
 playerRef.current.setAttribute("wasmurl", wasmUrl);
 
+/** 仅房主（player 模式）启用 movi-player 内置控件；观众端始终跟随，无本地控制。 */
+const showBuiltInControls = mode === "player" && role === "host";
+if (showBuiltInControls) playerRef.current.setAttribute("controls", "");
+
+/**
+ * 同步转发抑制窗口：适配器驱动（应用远端状态 / 恢复媒体）触发的回放事件不回传给房间，
+ * 只有用户在内置控件上的手势操作才转发为房主命令。seeked 等事件异步到达，故用时间窗。
+ */
+let suppressPlaybackEventsUntil = 0;
+function markPlaybackEventSuppressed(ms = 800): void {
+  suppressPlaybackEventsUntil = Date.now() + ms;
+}
+
+/** 把内置控件上的用户手势转发为房主同步命令（viewer 与 clock 模式不接线）。 */
+function wireControlForwarding(el: MoviElement): void {
+  if (!showBuiltInControls) return;
+  const fromUserGesture = (): boolean =>
+    Date.now() >= suppressPlaybackEventsUntil && playerReady && playerMediaId !== "";
+  el.addEventListener("play", () => {
+    if (fromUserGesture()) void client.hostPlay();
+  });
+  el.addEventListener("pause", () => {
+    if (fromUserGesture()) client.hostPause();
+  });
+  el.addEventListener("ratechange", () => {
+    if (fromUserGesture()) client.hostRate(el.playbackRate || 1);
+  });
+  el.addEventListener("seeked", () => {
+    if (fromUserGesture()) client.hostSeek((el.currentTime || 0) * 1000);
+  });
+}
+
 interface GrantResponse {
   url: string;
   name: string;
@@ -133,21 +202,22 @@ async function fetchGrant(mediaId: string): Promise<GrantResponse> {
   return (await res.json()) as GrantResponse;
 }
 
-/** 冷启动换源：换片/错误恢复共用。返回新挂载的 source（调用方负责设置 sourceAdapter）。 */
+/** 冷启动换源：切换视频/错误恢复共用。返回新挂载的 source（调用方负责设置 sourceAdapter）。 */
 function mountFreshPlayer(): void {
   const old = playerRef.current;
   const fresh = old.cloneNode(false) as HTMLElement;
   old.replaceWith(fresh);
   playerRef.current = fresh as unknown as MoviElement;
   playerRef.current.setAttribute("wasmurl", wasmUrl);
-  wireTrackSelects();
+  if (showBuiltInControls) playerRef.current.setAttribute("controls", "");
+  wireControlForwarding(playerRef.current);
   // 播放错误（含签名 403/网络断）→ 用新凭证重建源并恢复到原位置（S12）。
   // 仅在已就绪且开始播放过才自动恢复；初始加载阶段的解码错误（如 stub 假数据）只提示不恢复。
   playerRef.current.addEventListener("error", () => {
     if (!playerReady || !playerMediaId || recovering) return;
     if (!hasStartedPlayback) {
       setMediaBadge("媒体解码失败", "fail");
-      setStatus("媒体解码失败（初始载入阶段，非签名问题），请更换片源", true);
+      setStatus("媒体解码失败（初始载入阶段，非签名问题），请更换视频", true);
       return;
     }
     recovering = true;
@@ -172,12 +242,16 @@ async function recoverMedia(): Promise<void> {
     const info = await fetchGrant(playerMediaId);
     grantExpiresAt = Date.now() + info.expiresInSec * 1000;
     mountFreshPlayer();
-    playerSource = new CountingHttpSource(info.url, info.size);
+    // 直链条目 size=0：传 null 让 CountingHttpSource 走 HEAD/Range 探测真实大小。
+    playerSource = new CountingHttpSource(info.url, info.size > 0 ? info.size : null);
     playerRef.current.sourceAdapter = playerSource as never;
+    // 恢复路径直接改 currentTime：抑制随后的 seeked，避免误广播。
+    markPlaybackEventSuppressed(1000);
     playerRef.current.currentTime = posMs / 1000;
     setMediaBadge(`就绪: ${info.name}`, "ok");
     setStatus(`已用新凭证恢复: ${info.name}（回到 ${fmtTime(posMs)}）`);
     if (!wasPaused) {
+      markPlaybackEventSuppressed(800);
       void playerRef.current.play().catch(() => {
         gestureOverlay.classList.add("show");
       });
@@ -206,12 +280,21 @@ function makePlayerAdapter(): MediaAdapter {
     getTimeMs: () => (playerRef.current.currentTime || 0) * 1000,
     isPaused: () => playerRef.current.paused,
     getRate: () => playerRef.current.playbackRate || 1,
-    play: () => playerRef.current.play(),
-    pause: () => playerRef.current.pause(),
+    play: () => {
+      // 应用远端/本地同步状态：抑制随后的事件，避免回声广播。
+      markPlaybackEventSuppressed(500);
+      return playerRef.current.play();
+    },
+    pause: () => {
+      markPlaybackEventSuppressed(500);
+      playerRef.current.pause();
+    },
     seek: (ms) => {
+      markPlaybackEventSuppressed(800);
       playerRef.current.currentTime = ms / 1000;
     },
     setRate: (r) => {
+      markPlaybackEventSuppressed(500);
       playerRef.current.playbackRate = r;
     },
     hasMedia: () => playerReady,
@@ -221,13 +304,18 @@ function makePlayerAdapter(): MediaAdapter {
       const info = await fetchGrant(mediaId);
       grantExpiresAt = Date.now() + info.expiresInSec * 1000;
       mountFreshPlayer();
-      playerSource = new CountingHttpSource(info.url, info.size);
+      // 直链条目 size=0：传 null 让 CountingHttpSource 走 HEAD/Range 探测真实大小。
+      playerSource = new CountingHttpSource(info.url, info.size > 0 ? info.size : null);
       playerRef.current.sourceAdapter = playerSource as never;
       playerMediaId = mediaId;
       playerReady = true;
       hasStartedPlayback = false;
       setMediaBadge(`就绪: ${info.name}`, "ok");
-      setStatus(`已载入: ${info.name}（${(info.size / 1024 / 1024).toFixed(1)} MiB，凭证 ${Math.round(info.expiresInSec / 60)} 分钟）`);
+      setStatus(
+        info.size > 0
+          ? `已载入: ${info.name}（${(info.size / 1024 / 1024).toFixed(1)} MiB，凭证 ${Math.round(info.expiresInSec / 60)} 分钟）`
+          : `已载入: ${info.name}（凭证 ${Math.round(info.expiresInSec / 60)} 分钟）`,
+      );
       refreshMediaList();
     },
   };
@@ -236,11 +324,9 @@ function makePlayerAdapter(): MediaAdapter {
 // ── UI 引用 ───────────────────────────────────────────────
 
 const statusEl = $("#status");
-const hudEl = $("#hud");
 const clockModeEl = $("#clockMode");
 const playerWrapEl = $("#playerWrap");
 const gestureOverlay = $("#gestureOverlay");
-const hostControlsEl = $("#hostControls");
 
 function setStatus(text: string, warn = false): void {
   statusEl.textContent = text;
@@ -294,20 +380,12 @@ if (role !== "host") {
   viewerBarText.textContent = "跟随房主";
 }
 
-// 进度条：房主可拖（拖动中实时预览，松手才跳转）；观众只读
-const seekBarEl = $("#seekBar") as HTMLInputElement;
-seekBarEl.disabled = role !== "host";
-seekBarEl.addEventListener("input", () => {
-  $("#seekLabel").textContent = fmtTimeShort(Number(seekBarEl.value));
-});
-
 // 邀请行：房主默认展开，可用顶栏按钮折叠
 const inviteRowEl = $("#inviteRow") as HTMLElement;
 $("#inviteToggle").addEventListener("click", () => inviteRowEl.classList.toggle("show"));
 
+// 旧版自定义控制条已由 movi-player 内置控件接管，保持隐藏（元素保留，tick/事件接线不变）。
 if (role === "host") {
-  hostControlsEl.hidden = false;
-  $("#manualLoadRow").hidden = mode !== "clock";
   // 邀请链接展示（仅创建者浏览器会话里有邀请码；链接 = 房间号 + 邀请码）
   const invite = sessionStorage.getItem(`syncframe-invite-${roomId}`);
   if (invite) {
@@ -356,8 +434,6 @@ const wsUrl = new URL(`${wsProto}://${location.host}/ws`);
 wsUrl.searchParams.set("room", roomId);
 wsUrl.searchParams.set("token", memberToken);
 
-const samples: Record<string, unknown>[] = [];
-
 const client = new SyncClient({
   wsUrl: wsUrl.toString(),
   role,
@@ -368,7 +444,11 @@ const client = new SyncClient({
     viewerBarText.dataset.hostAway = msg.hostAway ? "1" : "0";
     const membersEl = $("#members");
     membersEl.textContent = "";
+    let hostCount = 0;
+    let guestCount = 0;
     for (const m of msg.members) {
+      if (m.role === "host") hostCount++;
+      else guestCount++;
       const chip = document.createElement("span");
       chip.className = "chip" + (m.id === clientId ? " me" : "");
       const crown = m.role === "host" ? `<span class="crown">${icon("crown", "ic")}</span>` : "";
@@ -376,6 +456,10 @@ const client = new SyncClient({
       chip.querySelector("span")!.textContent = m.name;
       membersEl.appendChild(chip);
     }
+    // 右侧在线人数统计（同步用户 = 房主 + 游客）。
+    $("#statTotal").textContent = String(hostCount + guestCount);
+    $("#statHost").textContent = String(hostCount);
+    $("#statGuest").textContent = String(guestCount);
   },
   onGestureNeeded: () => gestureOverlay.classList.add("show"),
   onStateApplied: (state) => {
@@ -390,17 +474,7 @@ $("#joinPlay").addEventListener("click", () => {
 
 // ── 房主控制 ──────────────────────────────────────────────
 
-// clock 模式：直接载入测试 mediaId（无 OpenList 依赖）
-$("#loadBtn").addEventListener("click", () => {
-  const path = ($("#mediaPath") as HTMLInputElement).value.trim();
-  if (!path) {
-    setStatus("请填写 mediaId", true);
-    return;
-  }
-  void client.hostLoad(path, { name: path.split("/").pop() ?? path });
-});
-
-// player 模式：OpenList 选片 → 注册 mediaId → 广播 load
+// player 模式：OpenList 媒体库 → 注册 mediaId → 广播 load
 if (mode === "player" && role === "host") {
   $("#browseCard").hidden = false;
   initBrowsePanel({
@@ -409,7 +483,7 @@ if (mode === "player" && role === "host") {
     onStatus: (line, warn) => setStatus(line, warn),
     onPick: (file) => {
       void (async () => {
-        setStatus(`正在注册片源: ${file.name}…`);
+        setStatus(`正在添加视频: ${file.name}…`);
         try {
           const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/media`, {
             method: "POST",
@@ -424,7 +498,7 @@ if (mode === "player" && role === "host") {
             error?: string;
           };
           if (!res.ok || !body.mediaId) {
-            setStatus(`注册片源失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, true);
+            setStatus(`添加视频失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, true);
             return;
           }
           setStatus(
@@ -433,79 +507,112 @@ if (mode === "player" && role === "host") {
           await client.hostLoad(body.mediaId, { name: body.name ?? file.name, size: body.size ?? file.size });
           refreshMediaList();
         } catch (err) {
-          setStatus(`注册片源失败: ${err instanceof Error ? err.message : err}`, true);
+          setStatus(`添加视频失败: ${err instanceof Error ? err.message : err}`, true);
         }
       })();
     },
   });
 }
 
-$("#playBtn").addEventListener("click", () => void client.hostPlay());
-$("#pauseBtn").addEventListener("click", () => client.hostPause());
-$("#back10").addEventListener("click", () => {
-  client.hostSeek(Math.max(0, adapter.getTimeMs() - 10_000));
-});
-$("#fwd10").addEventListener("click", () => {
-  client.hostSeek(adapter.getTimeMs() + 10_000);
-});
-$("#rateSel").addEventListener("change", (e) => {
-  client.hostRate(Number((e.target as HTMLSelectElement).value));
-});
-seekBarEl.addEventListener("change", () => client.hostSeek(Number(seekBarEl.value)));
+// P4：手动添加视频（仅房主）：选择 provider → 直链填 URL / OpenList 填路径 → 注册进播放列表。
+if (mode === "player" && role === "host") {
+  const addCard = $("#addCard") as HTMLElement;
+  addCard.hidden = false;
+  const providerSel = $("#addProvider") as HTMLSelectElement;
+  const directFields = $("#directFields") as HTMLElement;
+  const pathFields = $("#pathFields") as HTMLElement;
 
-// 轨道选择：仅本地，永不同步（S11）。
-function wireTrackSelects(): void {
-  const el = playerRef.current;
-  const audioSel = $("#audioTrackSel") as HTMLSelectElement;
-  const subSel = $("#subTrackSel") as HTMLSelectElement;
-  el.addEventListener("trackschange", () => {
-    try {
-      audioSel.textContent = "";
-      for (const t of el.player.getAudioTracks()) {
-        const o = document.createElement("option");
-        o.value = String(t.id);
-        o.textContent = t.label ?? `音轨 ${t.id}`;
-        audioSel.appendChild(o);
-      }
-      subSel.textContent = "";
-      const off = document.createElement("option");
-      off.value = "";
-      off.textContent = "字幕关";
-      subSel.appendChild(off);
-      for (const t of el.player.getSubtitleTracks()) {
-        const o = document.createElement("option");
-        o.value = String(t.id);
-        o.textContent = t.label ?? `字幕 ${t.id}`;
-        subSel.appendChild(o);
-      }
-    } catch {
-      /* 轨道列表未就绪 */
+  void (async () => {
+    const providers = await fetchMyProviders();
+    providerSel.textContent = "";
+    const optDirect = document.createElement("option");
+    optDirect.value = "direct";
+    optDirect.textContent = "直链（手动粘贴视频地址）";
+    providerSel.appendChild(optDirect);
+    for (const p of providers) {
+      const o = document.createElement("option");
+      o.value = `p:${p.id}`;
+      o.textContent = `${p.label}（${p.baseUrl}）`;
+      providerSel.appendChild(o);
     }
+    if (!localUser) {
+      const hint = document.createElement("option");
+      hint.value = "";
+      hint.disabled = true;
+      hint.textContent = "（登录后可配置更多 provider）";
+      providerSel.appendChild(hint);
+    }
+  })();
+
+  providerSel.addEventListener("change", () => {
+    const isDirect = providerSel.value === "direct";
+    directFields.hidden = !isDirect;
+    pathFields.hidden = isDirect;
   });
-  audioSel.addEventListener("change", () => {
-    try {
-      el.player.selectAudioTrack(Number(audioSel.value));
-    } catch {
-      /* gone mid-swap */
-    }
-  });
-  subSel.addEventListener("change", () => {
-    try {
-      el.player.selectSubtitleTrack(subSel.value === "" ? null : Number(subSel.value));
-    } catch {
-      /* gone mid-swap */
-    }
+
+  $("#addBtn").addEventListener("click", () => {
+    void (async () => {
+      const value = providerSel.value;
+      let payload: Record<string, unknown>;
+      if (value === "direct") {
+        const name = ($("#addName") as HTMLInputElement).value.trim();
+        const url = ($("#addUrl") as HTMLInputElement).value.trim();
+        if (!url) {
+          setStatus("请填写直链视频地址", true);
+          return;
+        }
+        payload = { provider: "direct", name, url };
+      } else {
+        const path = ($("#addPath") as HTMLInputElement).value.trim();
+        if (!path) {
+          setStatus("请填写 OpenList 文件路径", true);
+          return;
+        }
+        payload = { provider: value.slice(2), path };
+      }
+      setStatus("正在添加视频…");
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/media`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders,
+            ...(localUser ? { "X-User-Token": localUser.token } : {}),
+          },
+          body: JSON.stringify(payload),
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          mediaId?: string;
+          name?: string;
+          size?: number;
+          error?: string;
+        };
+        if (!res.ok || !body.mediaId) {
+          setStatus(`添加失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, true);
+          return;
+        }
+        setStatus(`已添加: ${body.name}（${body.mediaId}）`);
+        ($("#addUrl") as HTMLInputElement).value = "";
+        ($("#addPath") as HTMLInputElement).value = "";
+        await refreshMediaList();
+        // 添加后不自动切换，房主点击播放列表条目开播。
+      } catch (err) {
+        setStatus(`添加失败: ${err instanceof Error ? err.message : err}`, true);
+      }
+    })();
   });
 }
-if (mode === "player") wireTrackSelects();
 
-// ── 房间片源清单（mediaId 不透明映射 + 字幕授权验证入口）────────────────────
+if (mode === "player") wireControlForwarding(playerRef.current);
+
+// ── 播放列表（mediaId 不透明映射 + 字幕授权验证入口）────────────────────
 
 interface MediaListItem {
   mediaId: string;
   name: string;
   size: number;
   kind: "video" | "subtitle";
+  provider?: string;
 }
 
 async function refreshMediaList(): Promise<void> {
@@ -520,23 +627,29 @@ async function refreshMediaList(): Promise<void> {
     if (items.length === 0) {
       const d = document.createElement("div");
       d.className = "browse-empty";
-      d.textContent = role === "host" ? "（尚未注册片源，用上方选片面板添加）" : "（等待房主选片）";
+      d.textContent = role === "host" ? "（播放列表为空，用下方「添加视频」或 OpenList 媒体库）" : "（等待房主添加视频）";
       listEl.appendChild(d);
       return;
     }
+    const currentId = client.sample().appliedMediaId;
     for (const item of items) {
       const row = document.createElement("div");
       row.className = "browse-row";
       const kind = document.createElement("span");
       kind.className = "media-kind";
       kind.textContent = item.kind === "subtitle" ? "字幕" : "视频";
+      row.appendChild(kind);
+      if (item.provider) {
+        const prov = document.createElement("span");
+        prov.className = "media-provider";
+        prov.textContent = item.provider;
+        prov.title = "来源 provider";
+        row.appendChild(prov);
+      }
       const nameEl = document.createElement("span");
       nameEl.className = "browse-name";
       nameEl.textContent = item.name;
-      const idEl = document.createElement("span");
-      idEl.className = "browse-size";
-      idEl.textContent = item.mediaId;
-      row.append(kind, nameEl, idEl);
+      row.appendChild(nameEl);
       if (item.kind === "subtitle") {
         // P3 任务 8：外挂字幕走与视频完全一致的授权路径，点击验证 grant 可达。
         const btn = document.createElement("button");
@@ -554,6 +667,19 @@ async function refreshMediaList(): Promise<void> {
           })();
         });
         row.appendChild(btn);
+      } else if (role === "host") {
+        // 房主点击播放列表条目即切换播放（已注册的 mediaId 直接广播 load）。
+        row.classList.add("video-row");
+        if (item.mediaId === currentId) row.classList.add("current");
+        const play = document.createElement("button");
+        play.className = "browse-pick";
+        play.textContent = item.mediaId === currentId ? "播放中" : "播放";
+        play.addEventListener("click", (e) => {
+          e.stopPropagation();
+          void client.hostLoad(item.mediaId, { name: item.name, size: item.size });
+        });
+        row.addEventListener("click", () => void client.hostLoad(item.mediaId, { name: item.name, size: item.size }));
+        row.appendChild(play);
       }
       listEl.appendChild(row);
     }
@@ -573,17 +699,8 @@ function tick(): void {
     $("#clockSub").textContent =
       `${stats.role === "host" ? "你是房主（权威）" : "跟随房主"} · ` +
       `${state?.paused === false ? "播放中" : "已暂停"} · ${state?.rate ?? 1}×`;
-  } else {
-    seekBarEl.max = String(
-      Number.isFinite(playerRef.current.duration) ? playerRef.current.duration * 1000 : 7_200_000,
-    );
-    const dragging = seekBarEl.matches(":active") || document.activeElement === seekBarEl;
-    if (role === "host" && !dragging) {
-      seekBarEl.value = String(stats.clientTimeMs);
-    }
-    const durationMs = Number(seekBarEl.max);
-    $("#seekLabel").textContent = `${fmtTimeShort(stats.clientTimeMs)} / ${fmtTimeShort(durationMs)}`;
   }
+  // player 模式：时间与进度由 movi-player 内置控件呈现，无需同步到自定义 DOM。
 
   // 连接徽标 + 观众状态条
   const connBadge = $("#connBadge");
@@ -598,76 +715,6 @@ function tick(): void {
       state?.paused === false ? `跟随房主 · 播放中 · ${state?.rate ?? 1}×` : "跟随房主 · 已暂停";
     viewerBarTime.textContent = fmtTimeShort(stats.clientTimeMs);
   }
-
-  const grantLeft = grantExpiresAt > 0 ? Math.max(0, Math.round((grantExpiresAt - Date.now()) / 1000)) : null;
-  hudEl.textContent =
-    `角色: ${stats.role}${stats.connected ? "" : "（未连接/重连中）"}\n` +
-    `revision: ${stats.revision}  mediaRevision: ${stats.mediaRevision}\n` +
-    `媒体: ${stats.appliedMediaId || "（无）"}${grantLeft === null ? "" : `\n媒体凭证剩余: ${grantLeft}s`}\n` +
-    `时钟偏移: ${stats.clockOffsetMs} ms   最佳RTT: ${stats.bestRttMs} ms\n` +
-    `本地位置: ${fmtTime(stats.clientTimeMs)}\n` +
-    `目标位置: ${stats.expectedTargetMs === null ? "-" : fmtTime(stats.expectedTargetMs)}\n` +
-    `漂移: ${stats.driftMs === null ? "-" : `${stats.driftMs} ms`}\n` +
-    `硬纠正: ${stats.corrections} 次   强制对齐: ${stats.alignments} 次\n` +
-    `重连: ${stats.reconnects} 次   丢弃乱序状态: ${stats.droppedStates}`;
-
-  // 计划 §7.2 同步采样字段
-  samples.push({
-    ts: Date.now(),
-    roomId,
-    clientId,
-    role: stats.role,
-    revision: stats.revision,
-    mediaRevision: stats.mediaRevision,
-    rtt: stats.bestRttMs,
-    estimatedClockOffset: stats.clockOffsetMs,
-    action: state?.action ?? null,
-    hostCurrentTime: stats.expectedTargetMs,
-    clientCurrentTime: stats.clientTimeMs,
-    drift: stats.driftMs,
-    buffering: mode === "player" ? playerRef.current.paused : false,
-    seeking: virtualClock ? virtualClock.isSeeking() : false,
-    playbackRate: state?.rate ?? 1,
-    reconnectCount: stats.reconnects,
-    correctionCount: stats.corrections + stats.alignments,
-  });
-  if (samples.length > 3600) samples.shift();
-  $("#sampleCount").textContent = `已采样 ${samples.length} 条`;
-}
-
-$("#exportBtn").addEventListener("click", () => {
-  const blob = new Blob([JSON.stringify(report(), null, 2)], { type: "application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `sync-${roomId}-${clientId}.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-});
-
-$("#uploadBtn").addEventListener("click", async () => {
-  try {
-    const res = await fetch("/api/sync-report", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(report()),
-    });
-    const body = (await res.json()) as { saved?: string; error?: string };
-    setStatus(res.ok ? `已上传: ${body.saved}` : `上传失败: ${body.error ?? res.status}`, !res.ok);
-  } catch (err) {
-    setStatus(`上传失败: ${err instanceof Error ? err.message : err}`, true);
-  }
-});
-
-function report(): Record<string, unknown> {
-  return {
-    roomId,
-    clientId,
-    role,
-    mode,
-    exportedAt: new Date().toISOString(),
-    stats: client.sample(),
-    samples,
-  };
 }
 
 // ── 启动 ──────────────────────────────────────────────────
@@ -688,5 +735,6 @@ client.connect();
 window.addEventListener("pagehide", () => client.disconnect());
 window.setInterval(tick, 1000);
 if (mode === "player") window.setInterval(() => void refreshGrantIfNeeded(), 20_000);
+if (mode === "player") window.setInterval(() => void refreshMediaList(), 15_000);
 void refreshMediaList();
 void tick();

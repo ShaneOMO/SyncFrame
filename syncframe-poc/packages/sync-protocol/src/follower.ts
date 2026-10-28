@@ -35,7 +35,7 @@ export interface CorrectionPolicy {
 
 /**
  * 决定本次纠偏动作。
- * force=true 的场景（加入、重连、seek/load/play 命令、换片后首次对齐）直接 seek，
+ * force=true 的场景（加入、重连、seek/load/play 命令、切换视频后首次对齐）直接 seek，
  * 不受阈值限制——但漂移仍在阈值内时返回 none 以避免来回跳（S02）。
  */
 export function planCorrection(

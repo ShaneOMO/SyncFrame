@@ -15,7 +15,7 @@
 | 广播原始 `src` URL | 会泄露签名/内部路径 | **改为不透明 `mediaId`**，校验器拒绝 URL 形态（`http(s)://`、`?sign=`） |
 | 房主持 OTP secret claim，可 grant/revoke 控制权；房主离开自动提升继承人 | 适合公开产品；与 MVP 权限模型不符 | **仅房主控制**；房主离开→房间暂停 + 30s 宽限期等待重连，**不自动转移**（S15） |
 | 同步音轨/字幕选择（atrack/strack 随状态广播） | 多语言房间互相覆盖 | **改为观众本地选择**（S11），状态模型不含轨道 |
-| 以 `at` 时间戳判序（`msg.at <= lastStateAt` 丢弃） | 够用但语义混在时钟里 | 改为 **`revision`（定序）+ `mediaRevision`（换片）** 显式判序（S14） |
+| 以 `at` 时间戳判序（`msg.at <= lastStateAt` 丢弃） | 够用但语义混在时钟里 | 改为 **`revision`（定序）+ `mediaRevision`（切换视频）** 显式判序（S14） |
 | 所有 controller 都发心跳，各自携带 paused | 观众本地缓冲会反向暂停全房间（注释里的原话教训） | **只有房主说话**；观众永不主动上报状态，自动播放被拦只影响本地（S08/S10） |
 | `applyingRemote` 300ms 窗口 + `expectPaused` 15s 窗口抑制回声 | 必要（多 controller 场景） | 结构上消除：服务端不回显发送者，房主不会收到自己的命令 |
 | 心跳 10s、硬漂移阈值 1.0s（墙钟预算） | 保留 | 保留；0.5× 下 1s 墙钟 = 0.5s 片长，注释里的预算换算一并保留 |
@@ -40,7 +40,7 @@
 ```
 
 - `revision`：服务端单调递增，每次状态变更 +1。客户端丢弃 `revision` 不大于已应用值的任何状态。
-- `mediaRevision`：换片时 +1。**mediaRevision 更大的状态永远胜出**；更小的永远丢弃（旧片迟到消息，S14）。
+- `mediaRevision`：切换视频时 +1。**mediaRevision 更大的状态永远胜出**；更小的永远丢弃（旧视频迟到消息，S14）。
 - `serverTimeMs`：服务端单调时钟（`max(Date.now(), last+1)`，回拨防护）。
 - `mediaId`：不透明标识。Spike 里直接是 OpenList 路径；P3 改为受控映射 + 短期凭证（计划 §P3）。
 - 音量、音轨、字幕、字幕偏移**不在状态里**（观众本地）。
@@ -63,7 +63,7 @@ target = positionMs + (paused ? 0 : max(0, serverNow - serverTimeMs) × rate)
 | `{t:"cmd", action:"play"\|"pause", positionMs}` | 播放/暂停 | 仅房主 |
 | `{t:"cmd", action:"seek", positionMs}` | 跳转 | 仅房主 |
 | `{t:"cmd", action:"rate", rate, positionMs}` | 倍速 | 仅房主 |
-| `{t:"cmd", action:"load", mediaId, mediaMeta, positionMs, paused, rate}` | 换片 | 仅房主 |
+| `{t:"cmd", action:"load", mediaId, mediaMeta, positionMs, paused, rate}` | 切换视频 | 仅房主 |
 | `{t:"hb", positionMs, paused, rate}` | 状态心跳（5–10s） | 仅房主 |
 | `{t:"bye"}` | 主动离开 | 所有成员 |
 
@@ -107,7 +107,7 @@ stateDiagram-v2
 要点：
 
 - **观众每 1s 检查一次漂移**：`|本地 - target| > 1s` 才硬 seek（墙钟预算；0.5× 下等于 0.5s 片长）。阈值内不动作，避免画面抖动和 Range 流量浪费（计划 §4.6）。
-- **force 对齐**（welcome、seek/play/load 命令、换片）不受阈值限制，但目标本身已含 `经过时间×倍速`，不会来回跳（S02）。
+- **force 对齐**（welcome、seek/play/load 命令、切换视频）不受阈值限制，但目标本身已含 `经过时间×倍速`，不会来回跳（S02）。
 - **心跳的作用**只剩小纠偏基准：房主每 8s 报一次位置，服务端盖时间戳广播；漂移纠正完全由观众本地推算，不依赖心跳到达时机。
 - **房主本地即权威**：命令先本地应用（保留用户手势上下文以满足自动播放策略），再发送；服务端不回显，房主无需回声抑制。
 

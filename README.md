@@ -1,7 +1,7 @@
 # SyncFrame
 
 基于 **Movi Player + OpenList** 的多人同步观影室（可行性验证 PoC，P0–P3 已全部通过）。
-房主从自己挂载的 OpenList 库中选片，观众通过邀请链接进房，全房间播放/暂停/seek/倍速/换片自动同步；
+房主从自己挂载的 OpenList 媒体库中添加视频，观众通过邀请链接进房，全房间播放/暂停/seek/倍速自动同步；
 媒体字节由播放器直连 OpenList 拉取，不经过房间服务。
 
 | 大厅 | 观影房间 |
@@ -13,8 +13,8 @@
 ```text
 SyncFrame/
 ├── syncframe-poc/            # 全部代码（npm workspaces：apps + packages + tests）
-│   ├── apps/web/             # Vite 前端：大厅 lobby.html / 房间 room.html / P1 验证页 index.html
-│   ├── apps/server/          # Node 后端：REST 鉴权 + WebSocket 同步房间 + OpenList 选片/媒体授权
+│   ├── apps/web/             # Vite 前端：大厅 lobby.html（入口）/ 房间 room.html
+│   ├── apps/server/          # Node 后端：REST 鉴权 + WebSocket 同步房间 + OpenList 媒体库/媒体授权
 │   ├── packages/sync-protocol/# 同步协议包（时钟偏移、跟随纠偏、消息校验）
 │   ├── packages/openlist-adapter/ # OpenList API 适配器
 │   ├── tests/                # P0 HTTP 探测 / P2 协议与浏览器同步 / P3 安全与 e2e
@@ -61,7 +61,6 @@ npm run p1:web
 其他入口：
 
 - `http://localhost:5173/room.html?room=demo&role=host&mode=clock` — P2 房间页（clock 演示模式 / player 真实播放器模式，观众 `role=viewer`，可开多个窗口）
-- `http://localhost:5173/index.html` — P1 播放器原始文件验证页
 
 **调试技巧：**
 
@@ -113,8 +112,8 @@ OPENLIST_PASSWORD=your_password
 
 ```text
 浏览器 ──→ web（nginx:1.27，:7300→80）
-            ├─ 静态托管 Vite 构建产物（lobby / room / index 多页）
-            ├─ /api → server:8787（房间鉴权 / 选片 / 媒体授权）
+            ├─ 静态托管 Vite 构建产物（lobby / room 多页）
+            ├─ /api → server:8787（房间鉴权 / 媒体库 / 媒体授权）
             └─ /ws  → server:8787（WebSocket 同步房间，长连接）
 浏览器 ←── server（node:22-alpine，tsx 直接运行 TS）
             └─ 仅签发短期媒体地址；视频字节由浏览器直连 OpenList 拉取

@@ -1,5 +1,5 @@
 /**
- * P3 房主选片面板：OpenList 目录浏览 / 搜索 / 分页。
+ * P3 房主媒体库面板：OpenList 目录浏览 / 搜索 / 分页。
  *
  * 仅房主可见（观众端不挂载）。所有请求带成员令牌；观众令牌在服务端会被 403 拒绝（双保险）。
  * 点选视频文件 → onPick(path, name, size) → 由 room-main 注册 mediaId 并广播 load。
@@ -134,11 +134,11 @@ export function initBrowsePanel(handlers: BrowseHandlers): void {
       row.append(icon, name, size);
       if (!item.isDir && VIDEO_EXTS.has(extOf(item.name))) {
         row.classList.add("video");
-        // 整行可点（不仅是「选片」按钮）
+        // 整行可点（不仅是「添加」按钮）
         row.addEventListener("click", () => onClick(item));
         const btn = document.createElement("button");
         btn.className = "browse-pick";
-        btn.textContent = "选片";
+        btn.textContent = "添加";
         btn.addEventListener("click", (e) => {
           e.stopPropagation();
           onClick(item);

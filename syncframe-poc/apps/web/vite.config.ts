@@ -18,7 +18,6 @@ export default defineConfig({
     // 多页应用：显式声明三个入口，否则仅 index.html 会被构建
     rollupOptions: {
       input: {
-        main: resolve(__dirname, "index.html"),
         lobby: resolve(__dirname, "lobby.html"),
         room: resolve(__dirname, "room.html"),
       },

@@ -35,12 +35,19 @@ export type Role = "host" | "viewer";
 
 export interface MediaEntry {
   mediaId: string;
-  /** OpenList 文件路径（仅服务端持有，不外发）。 */
+  /** OpenList 文件路径（仅服务端持有，不外发）。直链条目此字段为空字符串。 */
   path: string;
   name: string;
   size: number;
   registeredBy: string;
   registeredAt: number;
+  /** 来源 provider 标签（直链 / OpenList / 用户自定义 provider 名），用于播放列表展示。 */
+  provider: string;
+  /** 直链 provider：最终地址（成员经 grant 拿到；仅服务端持有，不进 WS/日志）。 */
+  directUrl?: string;
+  /** 房主私有 OpenList provider 的所有者（用户名）+ providerId；grant 时用该用户的凭据解析。 */
+  providerOwner?: string;
+  providerId?: string;
 }
 
 export interface RelatedEntry {
@@ -67,6 +74,8 @@ export interface RoomRecord {
   /** 最近一次成员活动（加入/授权）：注册表清扫据此判断闲置。 */
   lastActiveAt: number;
   hostClientId: string;
+  /** 房主昵称（房间列表展示）。 */
+  hostName: string;
   media: Map<string, MediaEntry>;
   members: Map<string, MemberRecord>; // key = memberToken
 }
@@ -159,6 +168,7 @@ export class RoomRegistry {
       createdAt: this.now(),
       lastActiveAt: this.now(),
       hostClientId: "",
+      hostName: name,
       media: new Map(),
       members: new Map(),
     };
@@ -239,25 +249,32 @@ export class RoomRegistry {
     return member;
   }
 
-  /** 房主注册媒体：校验路径形态（防穿越），媒体元信息由调用方（已登录 OpenList）提供。 */
+  /** 注册媒体：校验路径形态（防穿越），媒体元信息由调用方（已登录 OpenList）提供。
+   *  provider 标签与直链/私有 provider 信息由调用方附带（registerMediaExt）。 */
   registerMedia(
     roomId: string,
     member: MemberRecord,
     path: string,
     meta: { name: string; size: number },
     related: { name: string; size: number }[] = [],
+    ext: { provider?: string; directUrl?: string; providerOwner?: string; providerId?: string } = {},
   ): { mediaId: string; related: RelatedEntry[] } | { error: string } {
     const room = this.rooms.get(roomId);
     if (!room) return { error: "房间不存在" };
     if (member.role !== "host" || member.clientId !== room.hostClientId) {
-      return { error: "只有房主可以选择片源" };
+      return { error: "只有房主可以添加视频" };
     }
-    if (!path.startsWith("/") || path.split("/").includes("..")) {
+    if (ext.directUrl !== undefined) {
+      const u = new URL(ext.directUrl);
+      if (u.protocol !== "http:" && u.protocol !== "https:" || u.username || u.password) {
+        return { error: "非法直链地址" };
+      }
+    } else if (!path.startsWith("/") || path.split("/").includes("..")) {
       return { error: "非法路径" };
     }
-    // 同一文件重复注册：复用既有 mediaId（幂等，防重复换片）。
+    // 同一文件/同一地址重复注册：复用既有 mediaId（幂等，防重复添加）。
     for (const entry of room.media.values()) {
-      if (entry.path === path) {
+      if (ext.directUrl !== undefined ? entry.directUrl === ext.directUrl : entry.path === path) {
         return { mediaId: entry.mediaId, related: this.relatedEntries(room, entry.mediaId) };
       }
     }
@@ -269,6 +286,9 @@ export class RoomRegistry {
       size: meta.size,
       registeredBy: member.clientId,
       registeredAt: this.now(),
+      provider: ext.provider ?? "OpenList",
+      ...(ext.directUrl !== undefined ? { directUrl: ext.directUrl } : {}),
+      ...(ext.providerOwner ? { providerOwner: ext.providerOwner, providerId: ext.providerId } : {}),
     });
     this.audit({ roomId, action: "media:register", clientId: member.clientId, mediaId });
     // 外挂字幕与视频同目录（fs/get related），自动注册并走同一 grant 路径（P3 任务 8）。
@@ -289,6 +309,8 @@ export class RoomRegistry {
           size: r.size,
           registeredBy: member.clientId,
           registeredAt: this.now(),
+          provider: ext.provider ?? "OpenList",
+          ...(ext.providerOwner ? { providerOwner: ext.providerOwner, providerId: ext.providerId } : {}),
         });
         this.audit({ roomId, action: "media:register-subtitle", clientId: member.clientId, mediaId: subId });
       }
@@ -311,8 +333,8 @@ export class RoomRegistry {
     return room.media.get(mediaId) ?? null;
   }
 
-  /** 房间媒体清单（成员可见：mediaId + 文件名 + 类型；不含路径）。 */
-  listMedia(roomId: string): { mediaId: string; name: string; size: number; kind: "video" | "subtitle" }[] | null {
+  /** 房间媒体清单（成员可见：mediaId + 文件名 + 类型 + provider 标签；不含路径/URL）。 */
+  listMedia(roomId: string): { mediaId: string; name: string; size: number; kind: "video" | "subtitle"; provider: string }[] | null {
     const room = this.rooms.get(roomId);
     if (!room) return null;
     return [...room.media.values()].map((e) => ({
@@ -320,6 +342,18 @@ export class RoomRegistry {
       name: e.name,
       size: e.size,
       kind: SUBTITLE_EXTS.has(extOf(e.name)) ? "subtitle" : "video",
+      provider: e.provider,
+    }));
+  }
+
+  /** 公开房间列表（大厅展示）：房间号、房主昵称、创建时间、在线人数、视频数。 */
+  listRooms(): { roomId: string; hostName: string; createdAt: number; memberCount: number; mediaCount: number }[] {
+    return [...this.rooms.values()].map((r) => ({
+      roomId: r.roomId,
+      hostName: r.hostName,
+      createdAt: r.createdAt,
+      memberCount: r.members.size,
+      mediaCount: r.media.size,
     }));
   }
 
@@ -344,7 +378,10 @@ export class RoomRegistry {
     if (cached && cached.at > this.now() - GRANT_CACHE_MS) {
       return { url: cached.url, name: cached.name, size: cached.size, expiresInSec: GRANT_TTL_SEC, cached: true };
     }
-    const resolved = await resolve(entry);
+    // 直链 provider：地址即注册值，无需解析；私有 OpenList provider 的解析由调用方按 providerOwner 完成。
+    const resolved = entry.directUrl !== undefined
+      ? { url: entry.directUrl, name: entry.name, size: entry.size }
+      : await resolve(entry);
     this.grantCache.set(cacheKey, { ...resolved, at: this.now() });
     room.lastActiveAt = this.now();
     // 审计不记录 URL/路径。
