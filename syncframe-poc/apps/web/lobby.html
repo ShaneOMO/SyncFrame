@@ -184,17 +184,14 @@
         <button id="authClose" class="icon ghost" aria-label="关闭"><svg class="ic"><use href="#i-x"/></svg></button>
       </div>
 
-      <!-- 未登录：登录 / 注册 -->
+      <!-- 未登录：仅登录（注册已关闭，账户由管理员创建） -->
       <div id="authForms">
-        <div class="tabs">
-          <button id="tabLogin" class="tab active">登录</button>
-          <button id="tabRegister" class="tab">注册</button>
-        </div>
         <label for="authUsername">用户名</label>
         <input id="authUsername" type="text" maxlength="24" autocomplete="username" />
         <label for="authPassword">密码</label>
         <input id="authPassword" type="password" maxlength="64" autocomplete="current-password" />
         <button id="authSubmit" class="primary">登录</button>
+        <p class="provider-hint">没有账户？请联系管理员创建；游客无需账户，凭邀请链接即可进房观看。</p>
         <p id="authMsg" role="status" aria-live="polite"></p>
       </div>
 
@@ -222,6 +219,20 @@
           <button id="pAdd">添加 provider</button>
         </div>
         <p class="provider-hint">「直链」「B 站视频」也可免配置直接使用：进房间后直接粘贴视频地址 / BV 号添加。</p>
+
+        <!-- 管理员：账户创建/删除/重置密码（注册已关闭） -->
+        <div id="adminPanel" hidden>
+          <h3><svg class="ic"><use href="#i-user"/></svg>账户管理（管理员）</h3>
+          <div id="adminUserList"></div>
+          <div class="provider-form" style="margin-top:8px">
+            <input id="aNewUsername" type="text" maxlength="24" placeholder="新用户名" autocomplete="off" />
+            <input id="aNewPassword" type="password" maxlength="64" placeholder="密码" autocomplete="new-password" />
+            <button id="aCreate">创建账户</button>
+          </div>
+          <p class="provider-hint">被删除用户的会话与凭据立即失效；重置密码后需重新登录。</p>
+        </div>
+        <p id="adminMsg" role="status" aria-live="polite"></p>
+
         <button id="logoutBtn" class="danger">退出登录</button>
         <p id="providerMsg" role="status" aria-live="polite"></p>
       </div>
@@ -256,12 +267,15 @@
       <button id="refreshRooms" class="ghost small"><svg class="ic"><use href="#i-refresh"/></svg>刷新</button>
     </div>
 
-    <div class="card">
-      <h2><svg class="ic"><use href="#i-plus"/></svg>创建房间</h2>
-      <p class="desc">成为房主：可从自己配置的 provider（OpenList / 直链）添加视频，统一控制播放、暂停、进度与倍速。</p>
-      <label for="createName">你的昵称</label>
-      <input id="createName" type="text" maxlength="24" placeholder="例如：小明" autocomplete="nickname" />
-      <button id="createBtn" class="primary" aria-label="创建房间并成为房主">创建房间</button>
+    <div class="card" id="createCard">
+      <h2><svg class="ic"><use href="#i-plus"/></svg>创建房间 <span class="room-count">需登录</span></h2>
+      <p class="desc">成为房主：可从自己配置的 provider（OpenList / B 站 / 直链）添加视频，统一控制播放、暂停、进度与倍速。</p>
+      <div id="createGate" class="browse-empty" hidden>登录后即可创建房间（右上角「登录」）</div>
+      <div id="createForm">
+        <label for="createName">你的昵称</label>
+        <input id="createName" type="text" maxlength="24" placeholder="例如：小明" autocomplete="nickname" />
+        <button id="createBtn" class="primary" aria-label="创建房间并成为房主">创建房间</button>
+      </div>
     </div>
 
     <div class="card">

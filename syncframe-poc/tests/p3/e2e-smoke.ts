@@ -13,9 +13,13 @@ import { SyncClient, VirtualMediaClock } from "../../packages/sync-protocol/src/
 import type { MediaAdapter } from "../../packages/sync-protocol/src/index.ts";
 import { startOpenListStub } from "./openlist-stub.ts";
 import {
+  ADMIN_PASS,
+  ADMIN_USER,
   createRoom,
+  createUserAsAdmin,
   joinRoom,
   getJson,
+  loginUser,
   postJson,
   startServer,
   type CreatedRoom,
@@ -25,6 +29,8 @@ const PORT = 8920;
 const STUB_PORT = 8921;
 const BASE = `http://localhost:${PORT}`;
 const WS_BASE = `ws://localhost:${PORT}`;
+const HOST_USER = "e2ehost";
+const HOST_PASS = "e2epw123";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -82,30 +88,49 @@ async function main(): Promise<void> {
   console.log("\n=== P3 端到端冒烟（真实服务端 + OpenList 桩 + SyncClient）===\n");
   const stub = await startOpenListStub(STUB_PORT);
   const server = await startServer(PORT, {
-    OPENLIST_BASE_URL: `http://localhost:${STUB_PORT}`,
-    OPENLIST_USERNAME: "stub",
-    OPENLIST_PASSWORD: "stub",
+    ADMIN_USERNAME: ADMIN_USER,
+    ADMIN_PASSWORD: ADMIN_PASS,
   });
 
   try {
-    // 1. 创建房间 + 邀请码加入
+    // 0. 管理员创建房主账户，房主配置自己的 OpenList provider（指向桩）
+    const adminToken = await loginUser(BASE, ADMIN_USER, ADMIN_PASS);
+    await createUserAsAdmin(BASE, adminToken, HOST_USER, HOST_PASS);
+    const hostUserToken = await loginUser(BASE, HOST_USER, HOST_PASS);
+    await fetch(`${BASE}/api/me/providers`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${hostUserToken}` },
+      body: JSON.stringify({
+        providers: [{ kind: "openlist", label: "桩", baseUrl: `http://localhost:${STUB_PORT}`, username: "stub", password: "stub" }],
+      }),
+    });
+    const me = (await (await fetch(`${BASE}/api/me`, { headers: { Authorization: `Bearer ${hostUserToken}` } })).json()) as {
+      providers: { id: string }[];
+    };
+    const providerId = me.providers[0]?.id ?? "";
+    const userHeader = { "X-User-Token": hostUserToken };
+
+    // 1. 创建房间 + 邀请码加入（创建必须登录）
     console.log("— 创建房间 / 加入 —");
-    const created = (await createRoom(BASE, "房主")).data as CreatedRoom;
+    const guestCreate = await createRoom(BASE, "游客");
+    check("游客创建房间 401", guestCreate.status === 401);
+    const created = (await createRoom(BASE, "房主", hostUserToken)).data as CreatedRoom;
     check("创建房间返回房间号+邀请码", Boolean(created.roomId && created.inviteCode));
     const viewer = await joinRoom(BASE, created.roomId, "观众甲", created.inviteCode, "v-e2e-1");
     check("观众凭邀请码加入", viewer.status === 200 && viewer.data.role === "viewer");
 
     // 2. 房主浏览 → 搜索 → 选片注册
     console.log("— 浏览 / 搜索 / 注册 —");
-    const browse = await getJson(BASE, `/api/browse?room=${created.roomId}&path=/movies`, created.memberToken);
+    const browse = await getJson(BASE, `/api/browse?room=${created.roomId}&provider=${providerId}&path=/movies`, created.memberToken, userHeader);
     check("房主浏览 /movies", browse.status === 200);
-    const search = await getJson(BASE, `/api/search?room=${created.roomId}&keywords=mkv`, created.memberToken);
+    const search = await getJson(BASE, `/api/search?room=${created.roomId}&provider=${providerId}&keywords=mkv`, created.memberToken, userHeader);
     check("房主搜索 mkv", search.status === 200 && ((search.data.content as unknown[]) ?? []).length >= 1);
     const reg = await postJson(
       BASE,
       `/api/rooms/${created.roomId}/media`,
-      { path: "/movies/a.mkv" },
+      { provider: providerId, path: "/movies/a.mkv" },
       created.memberToken,
+      userHeader,
     );
     const mediaId = String(reg.data.mediaId ?? "");
     check("注册 a.mkv 为不透明 mediaId", reg.status === 200 && /^m_/.test(mediaId));
@@ -145,7 +170,7 @@ async function main(): Promise<void> {
 
     // 5. 换片
     console.log("— 换片 —");
-    const reg2 = await postJson(BASE, `/api/rooms/${created.roomId}/media`, { path: "/movies/b.mp4" }, created.memberToken);
+    const reg2 = await postJson(BASE, `/api/rooms/${created.roomId}/media`, { provider: providerId, path: "/movies/b.mp4" }, created.memberToken, userHeader);
     const mediaId2 = String(reg2.data.mediaId ?? "");
     const oldRev = v1.client.currentRoomState()?.mediaRevision ?? 0;
     await host.client.hostLoad(mediaId2, { name: "b.mp4" });

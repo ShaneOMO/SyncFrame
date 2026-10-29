@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { SyncClient, VirtualMediaClock } from "../../packages/sync-protocol/src/index.ts";
 import type { MediaAdapter } from "../../packages/sync-protocol/src/index.ts";
-import { createRoom, joinRoom } from "../p3/room-api.ts";
+import { ADMIN_PASS, ADMIN_USER, createRoom, createUserAsAdmin, joinRoom, loginUser } from "../p3/room-api.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const children: ChildProcess[] = [];
@@ -46,7 +46,7 @@ function makeClient(room: string, token: string, role: "host" | "viewer", name: 
     hasMedia: () => true,
   };
   return new SyncClient({
-    wsUrl: `ws://localhost:5173/ws?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`,
+    wsUrl: `ws://localhost:8787/ws?room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`,
     role,
     media: adapter,
     WebSocketImpl: WebSocket,
@@ -62,9 +62,21 @@ async function main(): Promise<void> {
   await waitHttp("http://localhost:5173/room.html");
   console.log("服务就绪，房间页可访问: http://localhost:5173/lobby.html\n");
 
-  // P3：走房间鉴权流程创建房间与成员令牌
+  // P3：走房间鉴权流程创建房间与成员令牌（创建必须登录；本机 demo 无管理员时用不了创建 → 直接提示）
   const base = "http://localhost:8787";
-  const roomRes = await createRoom(base, "Host");
+  if (!process.env.ADMIN_USERNAME) {
+    console.log("提示：未配置 ADMIN_USERNAME/ADMIN_PASSWORD，跳过房间自动创建（请在 .env 配置管理员后重试）");
+    process.exitCode = 0;
+    return;
+  }
+  const adminToken = await loginUser(base, process.env.ADMIN_USERNAME, process.env.ADMIN_PASSWORD ?? "");
+  const demoUser = "demohost";
+  try {
+    await createUserAsAdmin(base, adminToken, demoUser, "demopw123");
+  } catch {
+    /* 已存在则复用 */
+  }
+  const roomRes = await createRoom(base, "Host", await loginUser(base, demoUser, "demopw123"));
   const room = roomRes.data.roomId;
   const hostToken = roomRes.data.memberToken;
   const v1Res = await joinRoom(base, room, "Viewer1", roomRes.data.inviteCode);

@@ -226,10 +226,13 @@
         <div id="status" role="status" aria-live="polite">初始化…</div>
       </div>
 
-      <!-- 媒体库（仅房主可见；与播放器同页） -->
+      <!-- 媒体库（仅房主可见；使用房主本人账户的 OpenList provider） -->
       <div class="card" id="browseCard" hidden>
-        <h3>OpenList 媒体库 <span>仅房主可浏览</span></h3>
+        <h3>OpenList 媒体库 <span>仅房主可浏览 · 使用你账户的 provider</span></h3>
         <div class="row">
+          <select id="browseProvider" style="flex:1 1 180px" aria-label="选择 OpenList provider"></select>
+        </div>
+        <div class="row" style="margin-top:var(--sp-2)">
           <button id="browseUp" title="上级目录" aria-label="上级目录" class="icon" style="width:32px;height:32px"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
           <input type="text" id="browsePath" value="/" aria-label="目录路径" />
           <button id="browseGo">进入</button>

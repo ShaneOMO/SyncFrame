@@ -1,5 +1,6 @@
-# SyncFrame 验证后端镜像（P3：房间鉴权 + 同步 + OpenList 代理）
+# SyncFrame 后端镜像（账户权限 + 房间鉴权 + 同步 + provider 媒体解析）
 # 构建上下文 = syncframe-poc 目录（需要仓库的 workspace 结构与 lockfile）
+# 管理员账户由 ADMIN_USERNAME / ADMIN_PASSWORD 环境变量初始化（compose 注入，不入镜像）
 
 FROM node:22-alpine
 

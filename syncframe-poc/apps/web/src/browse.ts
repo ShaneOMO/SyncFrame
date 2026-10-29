@@ -1,7 +1,8 @@
 /**
- * P3 房主媒体库面板：OpenList 目录浏览 / 搜索 / 分页。
+ * 房主媒体库面板：OpenList 目录浏览 / 搜索 / 分页。
  *
- * 仅房主可见（观众端不挂载）。所有请求带成员令牌；观众令牌在服务端会被 403 拒绝（双保险）。
+ * 仅房主可见（观众端不挂载）。所有请求带成员令牌（房主身份）+ X-User-Token（账户身份），
+ * 服务端只允许房间创建者本人的 provider（双保险）。切换 provider 通过返回的 reload() 重载。
  * 点选视频文件 → onPick(path, name, size) → 由 room-main 注册 mediaId 并广播 load。
  */
 
@@ -31,6 +32,10 @@ function iconSvg(name: "folder" | "file"): string {
 export interface BrowseHandlers {
   roomId: string;
   getToken: () => string;
+  /** 房间创建者本人的用户令牌（服务端校验 provider 归属）。 */
+  getUserToken: () => string | null;
+  /** 当前选中的 OpenList provider id。 */
+  getProviderId: () => string;
   onPick: (file: { path: string; name: string; size: number }) => void;
   onStatus: (line: string, warn?: boolean) => void;
 }
@@ -55,7 +60,13 @@ function fmtSize(bytes: number): string {
 }
 
 async function authedGet(handlers: BrowseHandlers, url: string): Promise<Record<string, unknown>> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${handlers.getToken()}` } });
+  const userToken = handlers.getUserToken();
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${handlers.getToken()}`,
+      ...(userToken ? { "X-User-Token": userToken } : {}),
+    },
+  });
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     throw new Error(typeof data.error === "string" ? data.error : `HTTP ${res.status}`);
@@ -63,7 +74,7 @@ async function authedGet(handlers: BrowseHandlers, url: string): Promise<Record<
   return data;
 }
 
-export function initBrowsePanel(handlers: BrowseHandlers): void {
+export function initBrowsePanel(handlers: BrowseHandlers): { reload: () => void } {
   const pathInput = $("#browsePath") as HTMLInputElement;
   const listEl = $("#browseList");
   const pageInfo = $("#browsePageInfo");
@@ -76,7 +87,7 @@ export function initBrowsePanel(handlers: BrowseHandlers): void {
   async function loadDir(dir: string, page: number): Promise<void> {
     handlers.onStatus(`正在浏览 ${dir} …`);
     try {
-      const qp = new URLSearchParams({ room: handlers.roomId, path: dir, page: String(page) });
+      const qp = new URLSearchParams({ room: handlers.roomId, provider: handlers.getProviderId(), path: dir, page: String(page) });
       const data = await authedGet(handlers, `/api/browse?${qp}`);
       searchMode = null;
       currentPage = Number(data.page ?? 1);
@@ -95,7 +106,7 @@ export function initBrowsePanel(handlers: BrowseHandlers): void {
   async function doSearch(keywords: string, parent: string, page: number): Promise<void> {
     handlers.onStatus(`正在搜索「${keywords}」…`);
     try {
-      const qp = new URLSearchParams({ room: handlers.roomId, keywords, parent, page: String(page) });
+      const qp = new URLSearchParams({ room: handlers.roomId, provider: handlers.getProviderId(), keywords, parent, page: String(page) });
       const data = await authedGet(handlers, `/api/search?${qp}`);
       const items = ((data.content as SearchItem[]) ?? []).map((c) => ({
         name: c.name,
@@ -193,5 +204,7 @@ export function initBrowsePanel(handlers: BrowseHandlers): void {
   });
 
   // 初始加载根目录
-  void loadDir("/", 1);
+  const reload = (): void => void loadDir("/", 1);
+  reload();
+  return { reload };
 }

@@ -1,18 +1,25 @@
 # SyncFrame
 
-基于 **Movi Player + OpenList** 的多人同步观影室。
-房主从媒体库（OpenList / B 站 / 直链）添加视频，观众通过邀请链接进房，全房间播放/暂停/进度/倍速自动同步；
+基于 **Movi Player** 的多人同步观影室。
+房主添加视频（OpenList 媒体库 / B 站 / 直链），观众通过邀请链接进房，全房间播放/暂停/进度/倍速自动同步；
 OpenList 媒体字节由播放器直连拉取，Bilibili 流经服务端反代（代发 Referer、透传 Range）。
 
 | 大厅 | 观影房间 |
 | --- | --- |
 | ![大厅](shot-lobby.png) | ![房间](shot-room.png) |
 
+## 权限模型
+
+- **游客（无需账户）**：只能凭邀请码加入房间观看；不能创建房间、不能配置 provider
+- **用户（登录）**：可创建房间；在「我的视频 provider」中保存自己的 OpenList 凭据 / Bilibili SESSDATA（只存服务端内存）
+- **管理员**：由部署时的环境变量初始化，**注册已关闭**——全部账户由管理员创建 / 删除 / 重置密码
+- 房间的 OpenList 浏览/添加只允许使用**房间创建者本人**的 provider
+
 ## 功能
 
-- **同步房间**：房主创建房间、分享邀请链接，游客点开即进房（无需账号）
-- **播放列表**：房主可添加直链视频、粘贴 B 站链接（BV 号），或从自己配置的 OpenList 媒体库中选择；点击条目即全房间切换播放
-- **账户与 provider**：登录账户后可配置自己可用的 OpenList / Bilibili provider（凭据只存服务端内存，B 站流由服务端反代）
+- **同步房间**：登录用户创建房间、分享邀请链接，游客点开即进房
+- **播放列表**：房主可添加直链视频、粘贴 B 站链接（BV 号），或从自己账户的 OpenList 媒体库中选择；点击条目即全房间切换播放
+- **账户与 provider**：登录后配置自己的 OpenList / Bilibili provider；B 站流由服务端反代
 - **移动端自适应**：窄屏单列布局、防 iOS 输入聚焦缩放、加大点按目标
 - **精同步**：时钟偏移估计 + 漂移纠偏，播放/暂停/seek/倍速由房主统一控制，观众自动跟随
 - **安全模型**：成员令牌鉴权、媒体注册为不透明 mediaId、短期签名地址授权、邀请码可重置
@@ -43,12 +50,13 @@ npm install
 cp .env.example .env        # Windows: copy .env.example .env
 ```
 
-编辑 `syncframe-poc/.env`，填入 OpenList 实例地址与**最小只读权限**账号：
+编辑 `syncframe-poc/.env`，设置管理员账户（**必填，注册已关闭**）：
 
 | 变量 | 说明 |
 | --- | --- |
-| `OPENLIST_BASE_URL` | OpenList 实例地址，如 `http://192.168.1.10:5244` |
-| `OPENLIST_USERNAME` / `OPENLIST_PASSWORD` | 只读账号（勿用管理员） |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 启动时初始化的管理员账户；之后用它登录，在「账户管理」中创建其他账户 |
+
+> OpenList / Bilibili 凭据**不在 env 配置**：各账户登录后在大厅「我的视频 provider」里自行填写，凭据只存服务端内存。
 
 **启动（两个终端）：**
 
@@ -80,16 +88,16 @@ docker compose up --build -d
 
 构建并启动两个容器，然后浏览器打开 **http://localhost:7300/lobby.html**。
 
-OpenList 连接通过环境变量注入（**不写入镜像**）。在仓库根目录建一个 `.env`
+管理员账户通过环境变量注入（**不写入镜像**）。在仓库根目录建一个 `.env`
 （compose 会自动读取，该文件已被 gitignore）：
 
 ```bash
-OPENLIST_BASE_URL=http://192.168.1.10:5244
-OPENLIST_USERNAME=readonly_user
-OPENLIST_PASSWORD=your_password
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=your_strong_password
 ```
 
 或直接 export 后运行 `docker compose up --build -d`。
+启动后用该管理员登录，在「账户管理」中创建观影账户；账户再自行配置自己的 OpenList / Bilibili provider。
 
 **容器架构：**
 
@@ -99,7 +107,8 @@ OPENLIST_PASSWORD=your_password
             ├─ /api → server:8787（房间鉴权 / 媒体库 / 媒体授权）
             └─ /ws  → server:8787（WebSocket 同步房间，长连接）
 浏览器 ←── server（node:22-alpine，tsx 直接运行 TS）
-            └─ 仅签发短期媒体地址；视频字节由浏览器直连 OpenList 拉取
+            └─ 账户/角色鉴权 + 签发短期媒体地址；provider 凭据只存服务端内存
+               （Bilibili 流由 server 反代，OpenList 字节仍由浏览器直连）
 ```
 
 **常用命令：**

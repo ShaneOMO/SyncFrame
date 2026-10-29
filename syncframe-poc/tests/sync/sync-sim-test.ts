@@ -20,7 +20,7 @@ import WebSocket from "ws";
 
 import { SyncClient, VirtualMediaClock } from "../../packages/sync-protocol/src/index.ts";
 import type { MediaAdapter, ServerMessage } from "../../packages/sync-protocol/src/index.ts";
-import { createRoom, joinRoom } from "../p3/room-api.ts";
+import { ADMIN_PASS, ADMIN_USER, createRoom, createUserAsAdmin, joinRoom, loginUser } from "../p3/room-api.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const PORT = 8899;
@@ -71,7 +71,8 @@ async function startServer(): Promise<void> {
       env: {
         ...process.env,
         SERVER_PORT: String(PORT),
-        OPENLIST_BASE_URL: "",
+        ADMIN_USERNAME: ADMIN_USER,
+        ADMIN_PASSWORD: ADMIN_PASS,
         SYNC_INJECT_LATENCY_MS: inject ? String(RTT / 2) : "0",
         SYNC_INJECT_JITTER_MS: inject ? "30" : "0",
       },
@@ -167,8 +168,15 @@ async function main(): Promise<void> {
   console.log(`\n=== P2 同步仿真测试（RTT 仿真 ${RTT}ms）===\n`);
   await startServer();
 
-  // P3：房间鉴权——创建房间拿到房主令牌与邀请码，观众凭邀请码换取成员令牌
-  const roomRes = await createRoom(BASE, "Host");
+  // P3：房间鉴权——创建房间拿到房主令牌与邀请码，观众凭邀请码换取成员令牌（创建必须登录）
+  const adminToken = await loginUser(BASE, ADMIN_USER, ADMIN_PASS);
+  try {
+    await createUserAsAdmin(BASE, adminToken, "simhost", "simpw123");
+  } catch {
+    /* 已存在则复用 */
+  }
+  const hostUserToken = await loginUser(BASE, "simhost", "simpw123");
+  const roomRes = await createRoom(BASE, "Host", hostUserToken);
   if (roomRes.status !== 200) throw new Error(`创建房间失败: ${JSON.stringify(roomRes.data)}`);
   roomId = roomRes.data.roomId;
   hostToken = roomRes.data.memberToken;

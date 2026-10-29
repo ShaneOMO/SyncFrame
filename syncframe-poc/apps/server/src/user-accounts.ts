@@ -1,17 +1,20 @@
 /**
- * P4 用户账户与视频 provider 配置（PoC：单进程内存存储）。
+ * 用户账户与视频 provider 配置（PoC：单进程内存存储）。
  *
- * 职责：
- * - 注册/登录：用户名 + 密码（scrypt 哈希 + 随机盐，内存存储）；
- * - 用户令牌：随机 256bit，30 天有效，用于 /api/me 与 provider 配置管理；
- * - provider 配置：每个登录用户可配置自己可用的视频 provider（OpenList 实例凭据）。
- *   凭据只存服务端内存；对外只回显 label/kind/baseUrl（不回显密码）。
+ * 权限模型：
+ * - 注册接口已关闭；账户由环境变量初始化的管理员创建/删除/管理（见 index.ts 的
+ *   ADMIN_USERNAME / ADMIN_PASSWORD）；
+ * - 角色：admin（管理账户）/ user（普通用户）。游客（未登录）只能凭邀请码加入房间，
+ *   不能创建房间、不能配置 provider；
+ * - 每个用户在自己的 provider 配置里保存 OpenList 凭据 / Bilibili SESSDATA
+ *   （凭据只存服务端内存，对外只回显 label/kind/baseUrl，不回显密码与 cookie）。
  *
- * 说明：这是 PoC 级账户系统（重启即失），用于验证「登录用户配置 provider → 房间添加视频」的产品流程，
- * 不是生产鉴权方案。
+ * 说明：这是 PoC 级账户系统（重启即失），不是生产鉴权方案。
  */
 
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+
+export type UserRole = "admin" | "user";
 
 export interface OpenListProviderConfig {
   id: string;
@@ -37,6 +40,7 @@ interface UserRecord {
   username: string;
   salt: string;
   hash: string;
+  role: UserRole;
   providers: Map<string, ProviderConfig>;
 }
 
@@ -48,24 +52,52 @@ export interface PublicProvider {
   username?: string;
 }
 
+export interface PublicUser {
+  username: string;
+  role: UserRole;
+  providerCount: number;
+  createdAt: number;
+}
+
 const USER_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function hashPassword(password: string, salt: string): string {
   return scryptSync(password, salt, 32).toString("hex");
 }
 
+function validateCredentials(username: string, password: string): string | null {
+  if (!/^[A-Za-z0-9_-]{2,24}$/.test(username)) return "用户名需为 2-24 位字母数字/下划线/横线";
+  if (password.length < 4) return "密码至少 4 位";
+  return null;
+}
+
 export class UserAccounts {
   private readonly users = new Map<string, UserRecord>();
   private readonly tokens = new Map<string, { username: string; expiresAt: number }>();
 
-  register(username: string, password: string): { ok: true; token: string } | { ok: false; error: string } {
-    const name = username.trim().slice(0, 24);
-    if (!/^[A-Za-z0-9_-]{2,24}$/.test(name)) return { ok: false, error: "用户名需为 2-24 位字母数字/下划线/横线" };
-    if (password.length < 4) return { ok: false, error: "密码至少 4 位" };
-    if (this.users.has(name)) return { ok: false, error: "用户名已存在" };
+  /**
+   * 启动时以环境变量初始化管理员账户：不存在则创建，已存在则提升为 admin。
+   * 幂等，可重复调用。凭据无效（空/格式错）时返回 false，由调用方告警。
+   */
+  initAdmin(username: string, password: string): boolean {
+    const name = username.trim();
+    if (!name || !password) return false;
+    const existing = this.users.get(name);
+    if (existing) {
+      existing.role = "admin";
+      return true;
+    }
+    const invalid = validateCredentials(name, password);
+    if (invalid) return false;
     const salt = randomBytes(16).toString("hex");
-    this.users.set(name, { username: name, salt, hash: hashPassword(password, salt), providers: new Map() });
-    return { ok: true, token: this.issueToken(name) };
+    this.users.set(name, {
+      username: name,
+      salt,
+      hash: hashPassword(password, salt),
+      role: "admin",
+      providers: new Map(),
+    });
+    return true;
   }
 
   login(username: string, password: string): string | null {
@@ -98,7 +130,66 @@ export class UserAccounts {
     return this.users.get(username) ?? null;
   }
 
-  /** 更新该用户的 provider 配置（全量替换）。仅保留 OpenList 合法配置。 */
+  isAdmin(username: string): boolean {
+    return this.users.get(username)?.role === "admin";
+  }
+
+  /** 管理员创建普通账户。 */
+  createUser(byAdmin: string, username: string, password: string): { ok: true } | { ok: false; error: string } {
+    if (!this.isAdmin(byAdmin)) return { ok: false, error: "只有管理员可以管理账户" };
+    const name = username.trim();
+    const invalid = validateCredentials(name, password);
+    if (invalid) return { ok: false, error: invalid };
+    if (this.users.has(name)) return { ok: false, error: "用户名已存在" };
+    const salt = randomBytes(16).toString("hex");
+    this.users.set(name, { username: name, salt, hash: hashPassword(password, salt), role: "user", providers: new Map() });
+    return { ok: true };
+  }
+
+  /** 管理员删除账户：不能删除自己，也不能删除最后一个管理员。 */
+  deleteUser(byAdmin: string, username: string): { ok: true } | { ok: false; error: string } {
+    if (!this.isAdmin(byAdmin)) return { ok: false, error: "只有管理员可以管理账户" };
+    const name = username.trim();
+    if (name === byAdmin) return { ok: false, error: "不能删除当前登录的管理员" };
+    const target = this.users.get(name);
+    if (!target) return { ok: false, error: "用户不存在" };
+    if (target.role === "admin" && ![...this.users.values()].some((u) => u.role === "admin" && u.username !== name)) {
+      return { ok: false, error: "不能删除最后一个管理员" };
+    }
+    this.users.delete(name);
+    for (const [tok, rec] of this.tokens) {
+      if (rec.username === name) this.tokens.delete(tok);
+    }
+    return { ok: true };
+  }
+
+  /** 管理员重置任意账户密码。 */
+  resetPassword(byAdmin: string, username: string, password: string): { ok: true } | { ok: false; error: string } {
+    if (!this.isAdmin(byAdmin)) return { ok: false, error: "只有管理员可以管理账户" };
+    const user = this.users.get(username.trim());
+    if (!user) return { ok: false, error: "用户不存在" };
+    if (password.length < 4) return { ok: false, error: "密码至少 4 位" };
+    user.salt = randomBytes(16).toString("hex");
+    user.hash = hashPassword(password, user.salt);
+    // 旧令牌全部作废，需重新登录。
+    for (const [tok, rec] of this.tokens) {
+      if (rec.username === user.username) this.tokens.delete(tok);
+    }
+    return { ok: true };
+  }
+
+  /** 管理员列出全部账户（不含任何凭据）。 */
+  listUsers(byAdmin: string): PublicUser[] | null {
+    if (!this.isAdmin(byAdmin)) return null;
+    return [...this.users.values()].map((u) => ({
+      username: u.username,
+      role: u.role,
+      providerCount: u.providers.size,
+      createdAt: 0, // PoC 内存存储未记录创建时间
+    }));
+  }
+
+  /** 更新该用户的 provider 配置（全量替换）。仅保留 openlist/bilibili 合法配置。 */
   setProviders(username: string, providers: unknown): { ok: true } | { ok: false; error: string } {
     const user = this.users.get(username);
     if (!user) return { ok: false, error: "用户不存在" };

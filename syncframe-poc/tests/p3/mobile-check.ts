@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { chromium } from "playwright-core";
-import { repoRoot } from "./room-api.ts";
+import { ADMIN_PASS, ADMIN_USER, repoRoot } from "./room-api.ts";
 
 const BACKEND_PORT = 8950;
 const WEB_PORT = 5950;
@@ -45,7 +45,7 @@ async function diagnose(page: import("playwright-core").Page, label: string): Pr
 async function main(): Promise<void> {
   const server = spawn(process.execPath, ["--import", "tsx", "apps/server/src/index.ts"], {
     cwd: repoRoot,
-    env: { ...process.env, SERVER_PORT: String(BACKEND_PORT) },
+    env: { ...process.env, SERVER_PORT: String(BACKEND_PORT), ADMIN_USERNAME: ADMIN_USER, ADMIN_PASSWORD: ADMIN_PASS },
     stdio: ["ignore", "pipe", "pipe"],
   });
   server.stderr?.on("data", (d) => process.stderr.write(d));
@@ -89,11 +89,9 @@ async function main(): Promise<void> {
     await page.screenshot({ path: "/tmp/m-lobby-login.png" });
     await diagnose(page, "大厅-登录弹窗");
 
-    // 注册并进房间（clock 模式避免媒体依赖）
-    const uname = `m${Math.random().toString(36).slice(2, 8)}`;
-    await page.fill("#authUsername", uname);
-    await page.fill("#authPassword", "pw1234");
-    await page.click("#tabRegister");
+    // 登录管理员并进房间（clock 模式避免媒体依赖）；注册已关闭，账户由管理员创建
+    await page.fill("#authUsername", ADMIN_USER);
+    await page.fill("#authPassword", ADMIN_PASS);
     await page.click("#authSubmit");
     await sleep(600);
     await page.screenshot({ path: "/tmp/m-lobby-provider.png" });

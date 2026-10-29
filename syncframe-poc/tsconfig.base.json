@@ -12,5 +12,5 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["packages/*/src", "tests/http", "tests/sync", "apps/server/src"]
+  "include": ["packages/*/src", "tests/sync", "apps/server/src"]
 }

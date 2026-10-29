@@ -1,31 +1,39 @@
 /**
- * SyncFrame 后端：房间鉴权 + mediaId 受控映射 + provider 媒体库（P3/P4）。
+ * SyncFrame 后端：账户/角色权限 + 房间鉴权 + mediaId 受控映射 + provider 媒体库。
+ *
+ * 权限模型：
+ * - 游客（未登录）：只能凭邀请码加入房间、观看；不能创建房间、不能配置 provider；
+ * - 用户（登录）：可创建房间、配置自己的 provider（OpenList 凭据 / Bilibili SESSDATA）；
+ * - 管理员：由环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 初始化，负责创建/删除/重置密码全部账户。
+ *   注册接口已关闭。
  *
  * 接口：
  *  - GET  /api/health                                存活检查
- *  - POST /api/auth/register | /api/auth/login        账户注册/登录（PoC 内存态）→ userToken
- *  - GET  /api/me                  (Bearer userToken)  当前用户 + provider 列表（不含密码）
- *  - PUT  /api/me/providers        (Bearer userToken)  全量替换 provider 配置
+ *  - POST /api/auth/login        {username,password} → userToken（无注册接口）
+ *  - GET  /api/me                  (Bearer userToken)  当前用户（含 role）+ provider 列表（不含凭据）
+ *  - PUT  /api/me/providers        (Bearer userToken)  全量替换自己的 provider 配置
+ *  - GET  /api/admin/users         (Bearer admin)      账户列表（不含凭据）
+ *  - POST /api/admin/users         (Bearer admin)      创建账户
+ *  - DELETE /api/admin/users/:name (Bearer admin)      删除账户
+ *  - POST /api/admin/users/:name/password (Bearer admin) 重置密码
  *  - GET  /api/rooms                                   公开房间列表（大厅）
- *  - POST /api/rooms            {name}               → {roomId, inviteCode, memberToken, clientId, role}
- *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}
- *                                                    → {memberToken, clientId, role}（clientId=房主时恢复 host）
- *  - GET  /api/browse?path=&page=                    列目录（仅房主；观众 403）
- *  - GET  /api/search?keywords=&parent=&page=        搜索（仅房主）
- *  - POST /api/rooms/:id/media  注册媒体（仅房主）。四种形态：
- *      {path}                                服务端环境变量 OpenList（默认）
- *      {provider:"direct", name, url}        直链（校验 http/https、禁带凭证）
- *      {provider:"bilibili", url}            B 站视频（BV/av/链接，服务端解析标题与分 P）
- *      {provider:<id>, path} + X-User-Token  房主私有 OpenList provider（凭用户令牌鉴权）
- *      {provider:"bilibili:<id>", url} + X-User-Token  房主私有 Bilibili provider（SESSDATA cookie）
+ *  - POST /api/rooms            (Bearer userToken) {name} → {roomId, inviteCode, memberToken, ...}
+ *                                                    （游客 401：创建房间必须登录）
+ *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}（公开，凭邀请码）
+ *  - GET  /api/browse?provider=&path=&page=           列目录（仅房主本人账户 + X-User-Token）
+ *  - GET  /api/search?provider=&keywords=&parent=&page= 搜索（同上）
+ *  - POST /api/rooms/:id/media  注册媒体（仅房主）。三种形态：
+ *      {provider:"direct", name, url}                 直链（校验 http/https、禁带凭证）
+ *      {provider:"bilibili", url}                     B 站视频（BV/av/链接，服务端解析标题与分 P）
+ *      {provider:<id>, path} + X-User-Token           房主本人账户的 OpenList provider
+ *      {provider:"bilibili:<id>", url} + X-User-Token 房主本人账户的 Bilibili provider
  *    自动注册同目录外挂字幕（srt/ass/ssa/vtt）
  *  - GET  /api/rooms/:id/media/:mediaId/grant        签发短期媒体访问凭证（房间成员；跨房间 404）
  *  - GET  /api/rooms/:id/media/:mediaId/stream?token=  Bilibili 流反代（透传 Range，代发 Referer）
- *  - GET  /api/resolve?path=&route=raw|proxy         P1 遗留：直接解析（无房间授权，仅验证用）
  *
  *  - WS   /ws?room=<id>&token=<memberToken>          同步房间（凭成员令牌入场）
  *
- * 令牌缓存于内存；OpenList 管理令牌只存在于服务端；
+ * 令牌缓存于内存；provider 凭据只存在于服务端；不再从环境变量读取 OpenList。
  * 审计日志见 [audit] 行：只含 roomId/mediaId/clientId/动作，不含令牌、签名 URL 或文件路径。
  */
 
@@ -40,14 +48,18 @@ import type { ProviderConfig } from "./user-accounts.ts";
 import { BilibiliClient, getPlayUrlCached, parseVideoId } from "./bilibili.ts";
 
 const PORT = Number(process.env.SERVER_PORT ?? 8787);
-const baseUrl = process.env.OPENLIST_BASE_URL;
-const username = process.env.OPENLIST_USERNAME;
-const password = process.env.OPENLIST_PASSWORD;
 
-// OpenList 凭证缺省时不再直接退出：同步功能不依赖媒体解析，
-// 只有调用 /api/resolve、browse、media、grant 时才要求配置完整。
-if (!baseUrl || !username || !password) {
-  console.warn("警告: 未配置 OPENLIST_BASE_URL / USERNAME / PASSWORD，媒体相关接口不可用（同步功能不受影响）");
+// P4：账户系统。管理员由环境变量初始化（注册接口已关闭）；
+// OpenList / Bilibili 凭据不再来自环境变量，全部由各账户在 provider 配置中自行保存。
+const accounts = new UserAccounts();
+if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
+  if (accounts.initAdmin(process.env.ADMIN_USERNAME, process.env.ADMIN_PASSWORD)) {
+    console.log(`管理员账户已就绪: ${process.env.ADMIN_USERNAME.trim()}`);
+  } else {
+    console.warn("警告: ADMIN_USERNAME/ADMIN_PASSWORD 格式无效，未创建管理员账户");
+  }
+} else {
+  console.warn("警告: 未配置 ADMIN_USERNAME / ADMIN_PASSWORD，将没有管理员账户（无法登录与管理用户）");
 }
 
 // P3：房间注册表（鉴权 + 媒体受控映射 + 授权缓存）。审计日志不含令牌/URL/路径。
@@ -59,8 +71,7 @@ const registry = new RoomRegistry({  onAudit: (ev) => {
   },
 });
 
-// P4：用户账户（PoC 内存存储）+ 房主私有 OpenList provider 的客户端缓存（凭据不出服务端）。
-const accounts = new UserAccounts();
+// 房主私有 OpenList provider 的客户端缓存（凭据不出服务端）。
 const userClients = new Map<string, { client: OpenListClient; baseUrl: string }>();
 
 // Bilibili provider：内置匿名客户端 + 用户私有（带 SESSDATA cookie）客户端缓存。
@@ -101,23 +112,6 @@ const roomManager = new RoomManager({
   /** 同步房间销毁后回调（注册表房间另有更长保留期，见下方清扫）。 */
   onRoomDisposed: (_roomId) => {},
 });
-
-const client = baseUrl ? new OpenListClient({ baseUrl, timeoutMs: 15_000 }) : null;
-let tokenPromise: Promise<void> | null = null;
-
-async function ensureLogin(): Promise<void> {
-  if (!client || !baseUrl || !username || !password) {
-    throw new Error("OpenList 未配置（OPENLIST_BASE_URL / USERNAME / PASSWORD）");
-  }
-  if (client.hasToken) return;
-  tokenPromise ??= client.login(username, password).finally(() => {
-    // 失败后允许重试
-    setTimeout(() => {
-      tokenPromise = null;
-    }, 0);
-  });
-  return tokenPromise;
-}
 
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
@@ -210,17 +204,6 @@ async function resolveWithClient(
   };
 }
 
-async function resolveOpenListUrl(filePath: string, userAgent: string): Promise<{
-  name: string;
-  size: number;
-  url: string;
-  related: { name: string; size: number }[];
-}> {
-  await ensureLogin();
-  if (!client) throw new Error("OpenList client 未初始化");
-  return resolveWithClient(client, baseUrl!, filePath, userAgent);
-}
-
 /** 重定向地址基本防护：仅 http/https、不允许携带凭证、限制跳数。
  *  注意：不拦截私网地址——用户的 OpenList 可能部署在局域网。 */
 function assertSafeRedirectUrl(url: string): void {
@@ -255,19 +238,23 @@ async function resolveRedirectChain(url: string): Promise<{ url: string; redirec
   return { url: current, redirectCount: 5 };
 }
 
-// ── P4：账户 / provider 配置 / 公开房间列表 ───────────────────────────────
-
-async function handleRegister(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
-  const parsed = readJsonBody(body);
-  const username = typeof parsed.username === "string" ? parsed.username : "";
-  const password = typeof parsed.password === "string" ? parsed.password : "";
-  const result = accounts.register(username, password);
-  if (!result.ok) {
-    sendJson(res, 400, { error: result.error });
-    return;
+/** 校验 X-User-Token 并确认该账户是房间创建者（provider 操作只允许房主本人账户）。返回 null 时已写出响应。 */
+function requireRoomOwner(req: IncomingMessage, res: ServerResponse, roomId: string): string | null {
+  const username = accounts.authenticate(
+    typeof req.headers["x-user-token"] === "string" ? req.headers["x-user-token"] : null,
+  );
+  if (!username) {
+    sendJson(res, 401, { error: "需要登录（X-User-Token）" });
+    return null;
   }
-  sendJson(res, 200, { userToken: result.token, username: username.trim() });
+  if (!registry.isRoomOwner(roomId, username)) {
+    sendJson(res, 403, { error: "只能使用房间创建者本人的 provider" });
+    return null;
+  }
+  return username;
 }
+
+// ── 账户 / provider 配置 / 管理员 / 公开房间列表 ───────────────────────────
 
 async function handleLogin(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
   const parsed = readJsonBody(body);
@@ -288,7 +275,73 @@ function handleMe(req: IncomingMessage, res: ServerResponse): void {
     sendJson(res, 401, { error: "未登录或登录已过期" });
     return;
   }
-  sendJson(res, 200, { username, providers: accounts.listProviders(username) });
+  sendJson(res, 200, { username, role: accounts.getUser(username)?.role ?? "user", providers: accounts.listProviders(username) });
+}
+
+// ── 管理员：账户创建/删除/重置密码（注册接口已关闭）─────────────────────────
+
+/** 校验管理员身份，返回管理员用户名；非管理员已写出 401/403。 */
+function requireAdmin(req: IncomingMessage, res: ServerResponse): string | null {
+  const username = accounts.authenticate(bearerToken(req));
+  if (!username) {
+    sendJson(res, 401, { error: "未登录或登录已过期" });
+    return null;
+  }
+  if (!accounts.isAdmin(username)) {
+    sendJson(res, 403, { error: "只有管理员可以管理账户" });
+    return null;
+  }
+  return username;
+}
+
+function handleAdminListUsers(req: IncomingMessage, res: ServerResponse): void {
+  const admin = requireAdmin(req, res);
+  if (!admin) return;
+  sendJson(res, 200, { users: accounts.listUsers(admin) ?? [] });
+}
+
+async function handleAdminCreateUser(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
+  const admin = requireAdmin(req, res);
+  if (!admin) return;
+  const parsed = readJsonBody(body);
+  const result = accounts.createUser(
+    admin,
+    typeof parsed.username === "string" ? parsed.username : "",
+    typeof parsed.password === "string" ? parsed.password : "",
+  );
+  if (!result.ok) {
+    sendJson(res, 400, { error: result.error });
+    return;
+  }
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleAdminDeleteUser(req: IncomingMessage, res: ServerResponse, username: string): Promise<void> {
+  const admin = requireAdmin(req, res);
+  if (!admin) return;
+  const result = accounts.deleteUser(admin, username);
+  if (!result.ok) {
+    sendJson(res, 400, { error: result.error });
+    return;
+  }
+  // 被删用户的 OpenList 客户端缓存一并失效。
+  for (const key of [...userClients.keys()]) {
+    if (key.startsWith(`${username}:`)) userClients.delete(key);
+  }
+  userBilibiliClients.clear();
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleAdminResetPassword(req: IncomingMessage, res: ServerResponse, username: string, body: string): Promise<void> {
+  const admin = requireAdmin(req, res);
+  if (!admin) return;
+  const parsed = readJsonBody(body);
+  const result = accounts.resetPassword(admin, username, typeof parsed.password === "string" ? parsed.password : "");
+  if (!result.ok) {
+    sendJson(res, 400, { error: result.error });
+    return;
+  }
+  sendJson(res, 200, { ok: true });
 }
 
 async function handleSetProviders(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
@@ -312,50 +365,19 @@ async function handleSetProviders(req: IncomingMessage, res: ServerResponse, bod
   sendJson(res, 200, { providers: accounts.listProviders(username) });
 }
 
-// ── P1 遗留：无房间授权的直解析（仅播放能力验证用，MVP 观影走 grant 链路）──
-
-async function handleResolve(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  const filePath = url.searchParams.get("path");
-  const route = url.searchParams.get("route") ?? "raw";
-  const ua = url.searchParams.get("ua") ?? "SyncFrame-PoC/0.1";
-  if (!filePath) {
-    sendJson(res, 400, { error: "缺少 path 参数" });
-    return;
-  }
-  if (route !== "raw" && route !== "proxy") {
-    sendJson(res, 400, { error: "route 必须是 raw 或 proxy" });
-    return;
-  }
-  try {
-    const detail = await client!.getFile(filePath, { userAgent: ua });
-    const proxy = `${baseUrl!.replace(/\/+$/, "")}/d${filePath.startsWith("/") ? "" : "/"}${filePath}${
-      detail.sign ? `?sign=${encodeURIComponent(detail.sign)}` : ""
-    }`;
-    const initial = route === "raw" ? (detail.raw_url ?? proxy) : proxy;
-    const { url: finalUrl, redirectCount } = await resolveRedirectChain(initial);
-    sendJson(res, 200, {
-      name: detail.name,
-      size: detail.size,
-      path: filePath,
-      provider: detail.provider ?? null,
-      route,
-      url: finalUrl,
-      redirected: redirectCount > 0,
-      rawUrl: detail.raw_url ?? null,
-      related: (detail.related ?? []).map((r) => ({ name: r.name, size: r.size })),
-    });
-  } catch (err) {
-    sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
-  }
-}
-
-// ── P3 端点实现 ─────────────────────────────────────────────
+// ── 房间端点实现 ─────────────────────────────────────────────
 
 async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
+  // 游客只能加入房间：创建房间必须登录（用户令牌）。
+  const hostUser = accounts.authenticate(bearerToken(req));
+  if (!hostUser) {
+    sendJson(res, 401, { error: "创建房间需要先登录账户" });
+    return;
+  }
   const parsed = readJsonBody(body);
   const name = typeof parsed.name === "string" ? parsed.name : "房主";
   const clientId = typeof parsed.clientId === "string" ? parsed.clientId : undefined;
-  const { room, member, hostSecret } = registry.createRoom(name, clientId);
+  const { room, member, hostSecret } = registry.createRoom(name, hostUser, clientId);
   sendJson(res, 200, {
     roomId: room.roomId,
     inviteCode: room.inviteCode,
@@ -409,11 +431,23 @@ async function handleBrowse(req: IncomingMessage, res: ServerResponse, url: URL,
   }
   const member = requireMember(req, res, roomId, { hostOnly: true });
   if (!member) return;
+  const providerId = (url.searchParams.get("provider") ?? "").trim();
+  if (!providerId) {
+    sendJson(res, 400, { error: "缺少 provider 参数" });
+    return;
+  }
+  // 只允许用房间创建者本人的 OpenList provider 浏览。
+  const owner = requireRoomOwner(req, res, roomId);
+  if (!owner) return;
   const dirPath = url.searchParams.get("path") ?? "/";
   const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
   try {
-    await ensureLogin();
-    const data = await client!.listDir(dirPath, { page, perPage: 100 });
+    const ol = await userOpenListClient(owner, providerId);
+    if (!ol) {
+      sendJson(res, 403, { error: "provider 不存在或不属于房间创建者" });
+      return;
+    }
+    const data = await ol.client.listDir(dirPath, { page, perPage: 100 });
     const perPage = 100;
     sendJson(res, 200, {
       path: dirPath,
@@ -439,6 +473,13 @@ async function handleSearch(req: IncomingMessage, res: ServerResponse, url: URL,
   }
   const member = requireMember(req, res, roomId, { hostOnly: true });
   if (!member) return;
+  const providerId = (url.searchParams.get("provider") ?? "").trim();
+  if (!providerId) {
+    sendJson(res, 400, { error: "缺少 provider 参数" });
+    return;
+  }
+  const owner = requireRoomOwner(req, res, roomId);
+  if (!owner) return;
   const keywords = (url.searchParams.get("keywords") ?? "").trim();
   const parent = url.searchParams.get("parent") ?? "/";
   const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
@@ -447,8 +488,12 @@ async function handleSearch(req: IncomingMessage, res: ServerResponse, url: URL,
     return;
   }
   try {
-    await ensureLogin();
-    const data = await client!.search(keywords, { parent, page, perPage: 50 });
+    const ol = await userOpenListClient(owner, providerId);
+    if (!ol) {
+      sendJson(res, 403, { error: "provider 不存在或不属于房间创建者" });
+      return;
+    }
+    const data = await ol.client.search(keywords, { parent, page, perPage: 50 });
     const perPage = 50;
     sendJson(res, 200, {
       keywords,
@@ -518,22 +563,21 @@ async function handleRegisterMedia(
       sendJson(res, 400, { error: "无法识别 bilibili 视频（支持 BV 号 / av 号 / bilibili 链接）" });
       return;
     }
-    // 私有 provider：bilibili:<providerId>，凭 X-User-Token 取该用户的 cookie 配置。
+    // 私有 provider：bilibili:<providerId>，必须是房间创建者本人账户的 cookie 配置。
     let providerCfg: ProviderConfig | undefined;
     let providerLabel = "哔哩哔哩";
     let providerOwner: string | undefined;
     if (provider.startsWith("bilibili:")) {
       const providerId = provider.slice("bilibili:".length);
-      const username = accounts.authenticate(
-        typeof req.headers["x-user-token"] === "string" ? req.headers["x-user-token"] : null,
-      );
-      providerCfg = username ? accounts.getUser(username)?.providers.get(providerId) : undefined;
-      if (!username || !providerCfg || providerCfg.kind !== "bilibili") {
-        sendJson(res, 403, { error: "provider 不存在或不属于当前登录用户" });
+      const owner = requireRoomOwner(req, res, roomId);
+      if (!owner) return;
+      providerCfg = accounts.getUser(owner)?.providers.get(providerId);
+      if (!providerCfg || providerCfg.kind !== "bilibili") {
+        sendJson(res, 403, { error: "provider 不存在或不属于房间创建者" });
         return;
       }
       providerLabel = providerCfg.label;
-      providerOwner = username;
+      providerOwner = owner;
     }
     try {
       const bc = bilibiliClientFor(providerCfg);
@@ -558,51 +602,35 @@ async function handleRegisterMedia(
     sendJson(res, 400, { error: "缺少 path 参数" });
     return;
   }
-  // 房主私有 OpenList provider：凭 X-User-Token 确认身份，用该用户的凭据解析（P4）。
-  if (provider) {
-    const username = accounts.authenticate(
-      typeof req.headers["x-user-token"] === "string" ? req.headers["x-user-token"] : null,
-    );
-    const ol = username ? await userOpenListClient(username, provider) : null;
-    if (!username || !ol) {
-      sendJson(res, 403, { error: "provider 不存在或不属于当前登录用户" });
-      return;
-    }
-    const user = accounts.getUser(username)!;
-    try {
-      const detail = await resolveWithClient(ol.client, ol.baseUrl, filePath, "SyncFrame-PoC/0.1");
-      const result = registry.registerMedia(roomId, member, filePath, { name: detail.name, size: detail.size }, detail.related, {
-        provider: user.providers.get(provider)!.label,
-        providerOwner: username,
-        providerId: provider,
-      });
-      if ("error" in result) {
-        sendJson(res, 403, { error: result.error });
-        return;
-      }
-      sendJson(res, 200, { mediaId: result.mediaId, name: detail.name, size: detail.size, related: result.related, provider: user.providers.get(provider)!.label });
-    } catch (err) {
-      sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
-    }
+  if (!provider) {
+    sendJson(res, 400, { error: "缺少 provider（环境变量 OpenList 已移除，请选择账户 provider）" });
     return;
   }
-  // 默认：服务端环境变量配置的 OpenList（P3 既有行为）。
   if (!filePath.startsWith("/") || filePath.split("/").includes("..")) {
     sendJson(res, 400, { error: "非法路径" });
     return;
   }
+  // OpenList provider：必须用房间创建者本人的账户（X-User-Token）。
+  const owner = requireRoomOwner(req, res, roomId);
+  if (!owner) return;
+  const ol = await userOpenListClient(owner, provider);
+  if (!ol) {
+    sendJson(res, 403, { error: "provider 不存在或不属于房间创建者" });
+    return;
+  }
+  const user = accounts.getUser(owner)!;
   try {
-    // 用 fs/get 校验文件存在并取元信息/related（同时完成路径合法性校验）。
-    const detail = await resolveOpenListUrl(filePath, "SyncFrame-PoC/0.1");
-    const result = registry.registerMedia(roomId, member, filePath, {
-      name: detail.name,
-      size: detail.size,
-    }, detail.related);
+    const detail = await resolveWithClient(ol.client, ol.baseUrl, filePath, "SyncFrame-PoC/0.1");
+    const result = registry.registerMedia(roomId, member, filePath, { name: detail.name, size: detail.size }, detail.related, {
+      provider: user.providers.get(provider)!.label,
+      providerOwner: owner,
+      providerId: provider,
+    });
     if ("error" in result) {
       sendJson(res, 403, { error: result.error });
       return;
     }
-    sendJson(res, 200, { mediaId: result.mediaId, name: detail.name, size: detail.size, related: result.related, provider: "OpenList" });
+    sendJson(res, 200, { mediaId: result.mediaId, name: detail.name, size: detail.size, related: result.related, provider: user.providers.get(provider)!.label });
   } catch (err) {
     sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
   }
@@ -640,14 +668,14 @@ async function handleGrant(
         const streamUrl = `/api/rooms/${encodeURIComponent(roomId)}/media/${encodeURIComponent(mediaId)}/stream?token=${encodeURIComponent(member.token)}`;
         return Promise.resolve({ url: streamUrl, name: entry.name, size: 0 });
       }
-      // 私有 OpenList provider：用注册者（房主）的凭据解析；默认走服务端配置的 OpenList。
+      // OpenList provider：用注册者（房间创建者）的凭据解析（凭据不出服务端）。
       if (entry.providerOwner && entry.providerId) {
         return userOpenListClient(entry.providerOwner, entry.providerId).then((ol) => {
           if (!ol) throw new Error("provider 不可用");
           return resolveWithClient(ol.client, ol.baseUrl, entry.path, req.headers["user-agent"] ?? "SyncFrame-PoC/0.1");
         });
       }
-      return resolveOpenListUrl(entry.path, req.headers["user-agent"] ?? "SyncFrame-PoC/0.1");
+      throw new Error("媒体来源 provider 不可用");
     });
     if (!grant) {
       // 跨房间/未注册 mediaId：404，不暴露存在性（P3 通过门槛：不能越权访问其他媒体）。
@@ -781,9 +809,9 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/health") {
       sendJson(res, 200, {
         ok: true,
-        hasToken: client?.hasToken ?? false,
         rooms: roomManager.roomCount(),
         registryRooms: registry.roomCount(),
+        hasAdmin: process.env.ADMIN_USERNAME ? accounts.isAdmin(process.env.ADMIN_USERNAME.trim()) : false,
         injectLatencyMs: Number(process.env.SYNC_INJECT_LATENCY_MS ?? 0),
         injectJitterMs: Number(process.env.SYNC_INJECT_JITTER_MS ?? 0),
       });
@@ -792,14 +820,20 @@ const server = createServer(async (req, res) => {
     } else if (url.pathname === "/api/rooms" && req.method === "GET") {
       // P4 大厅房间列表（公开摘要：房间号/房主昵称/人数/视频数）。
       sendJson(res, 200, { rooms: registry.listRooms() });
-    } else if (url.pathname === "/api/auth/register" && req.method === "POST") {
-      await handleRegister(req, res, await readBody(req));
     } else if (url.pathname === "/api/auth/login" && req.method === "POST") {
       await handleLogin(req, res, await readBody(req));
     } else if (url.pathname === "/api/me" && req.method === "GET") {
       handleMe(req, res);
     } else if (url.pathname === "/api/me/providers" && req.method === "PUT") {
       await handleSetProviders(req, res, await readBody(req));
+    } else if (url.pathname === "/api/admin/users" && req.method === "GET") {
+      handleAdminListUsers(req, res);
+    } else if (url.pathname === "/api/admin/users" && req.method === "POST") {
+      await handleAdminCreateUser(req, res, await readBody(req));
+    } else if (url.pathname.startsWith("/api/admin/users/") && req.method === "DELETE") {
+      await handleAdminDeleteUser(req, res, decodeURIComponent(url.pathname.split("/")[4]));
+    } else if (url.pathname.startsWith("/api/admin/users/") && req.method === "POST" && url.pathname.endsWith("/password")) {
+      await handleAdminResetPassword(req, res, decodeURIComponent(url.pathname.split("/")[4]), await readBody(req));
     } else if (url.pathname.startsWith("/api/rooms/") && req.method === "POST" && url.pathname.endsWith("/join")) {
       if (!rateLimit("join", clientIp(req))) {
         sendJson(res, 429, { error: "尝试过于频繁，请稍后再试" });
@@ -826,8 +860,6 @@ const server = createServer(async (req, res) => {
     } else if (url.pathname.startsWith("/api/rooms/") && req.method === "GET" && url.pathname.endsWith("/stream")) {
       const parts = url.pathname.split("/"); // ["","api","rooms",:id,"media",:mediaId,"stream"]
       await handleStream(req, res, parts[3], parts[5], url);
-    } else if (url.pathname === "/api/resolve" && req.method === "GET") {
-      await handleResolve(req, res, url);
     } else {
       sendJson(res, 404, { error: "not found" });
     }
@@ -878,9 +910,10 @@ registrySweep.unref();
 
 server.listen(PORT, () => {
   console.log(`SyncFrame 后端已启动: http://localhost:${PORT}`);
-  console.log(`  POST /api/auth/register | /api/auth/login | GET /api/me | PUT /api/me/providers   （P4 账户与 provider）`);
-  console.log(`  GET  /api/rooms | POST /api/rooms | /api/rooms/:id/join   （房间列表 + 房间鉴权）`);
-  console.log(`  GET  /api/browse?room=&path= | /api/search?room=&keywords=   （房主媒体库）`);
+  console.log(`  POST /api/auth/login | GET /api/me | PUT /api/me/providers   （账户与 provider；注册已关闭）`);
+  console.log(`  GET/POST/DELETE /api/admin/users…   （管理员账户管理）`);
+  console.log(`  GET  /api/rooms | POST /api/rooms（需登录）| /api/rooms/:id/join   （房间列表 + 房间鉴权）`);
+  console.log(`  GET  /api/browse?room=&provider= | /api/search?provider=&keywords=   （房主本人媒体库）`);
   console.log(`  POST /api/rooms/:id/media | GET .../media/:mediaId/grant   （受控映射 + 短期凭证）`);
   console.log(`  GET  .../media/:mediaId/stream?token=   （Bilibili 流反代，Range 透传）`);
   console.log(`  WS   /ws?room=<id>&token=<memberToken>   （凭成员令牌入场）`);

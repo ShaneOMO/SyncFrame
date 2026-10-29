@@ -1,8 +1,9 @@
 /**
- * P3 安全测试：房间鉴权 + mediaId 受控映射 + 短期媒体凭证 + 日志泄露检查。
+ * P3 安全测试：账户权限模型 + 房间鉴权 + mediaId 受控映射 + 短期媒体凭证 + 日志泄露检查。
  *
- * 对照计划 P3 通过门槛：
- * - 非 OpenList 登录用户可在授权房间观看指定视频，但不能浏览未授权目录；
+ * 覆盖门槛：
+ * - 游客（未登录）只能加入房间：创建房间 401、配置 provider 401、访问管理接口 401；
+ * - 非管理账户不能管理用户（403）；OpenList 媒体操作必须使用房间创建者本人的 provider；
  * - 房间码或媒体链接不能越权访问其他媒体；
  * - 日志不泄露 OpenList 令牌、完整签名 URL 或敏感路径。
  *
@@ -15,9 +16,13 @@ import assert from "node:assert/strict";
 import WebSocket from "ws";
 import { startOpenListStub } from "./openlist-stub.ts";
 import {
+  ADMIN_PASS,
+  ADMIN_USER,
   createRoom,
+  createUserAsAdmin,
   joinRoom,
   getJson,
+  loginUser,
   postJson,
   startServer,
   type CreatedRoom,
@@ -28,11 +33,16 @@ const PORT = 8910;
 const STUB_PORT = 8911;
 const BASE = `http://localhost:${PORT}`;
 const WS_BASE = `ws://localhost:${PORT}`;
+const HOST_USER = "host1";
+const HOST_PASS = "hostpw123";
 
 let stub: { close: () => Promise<void> };
 let server: SpawnedServer;
 let created: CreatedRoom;
-/** 房主当前有效令牌：同一身份重新加入会作废旧令牌（防双身份），后续用例跟随最新令牌。 */
+/** host1 的账户令牌与用户令牌（provider 操作要求 X-User-Token = 房间创建者本人）。 */
+let hostUserToken: string;
+let hostProviderId = "";
+/** 房主当前有效成员令牌：同一身份重新加入会作废旧令牌（防双身份），后续用例跟随最新令牌。 */
 let hostToken: string;
 
 function wsConnect(url: string): Promise<WebSocket> {
@@ -65,12 +75,32 @@ async function firstMessage(ws: WebSocket): Promise<Record<string, unknown>> {
 
 before(async () => {
   stub = await startOpenListStub(STUB_PORT);
+  // 无 OPENLIST_* 环境变量：OpenList 凭据只存在于账户 provider 配置中。
   server = await startServer(PORT, {
-    OPENLIST_BASE_URL: `http://localhost:${STUB_PORT}`,
-    OPENLIST_USERNAME: "stub",
-    OPENLIST_PASSWORD: "stub",
+    ADMIN_USERNAME: ADMIN_USER,
+    ADMIN_PASSWORD: ADMIN_PASS,
   });
-  const res = await createRoom(BASE, "安全测试房主");
+  // 管理员创建房主账户；房主配置自己的 OpenList provider（指向桩）。
+  const adminToken = await loginUser(BASE, ADMIN_USER, ADMIN_PASS);
+  await createUserAsAdmin(BASE, adminToken, HOST_USER, HOST_PASS);
+  hostUserToken = await loginUser(BASE, HOST_USER, HOST_PASS);
+  const setRes = await fetch(`${BASE}/api/me/providers`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${hostUserToken}` },
+    body: JSON.stringify({
+      providers: [
+        { kind: "openlist", label: "桩", baseUrl: `http://localhost:${STUB_PORT}`, username: "stub", password: "stub" },
+      ],
+    }),
+  });
+  assert.equal(setRes.status, 200);
+  const me = (await (await fetch(`${BASE}/api/me`, { headers: { Authorization: `Bearer ${hostUserToken}` } })).json()) as {
+    providers: { id: string }[];
+  };
+  hostProviderId = me.providers[0]?.id ?? "";
+  assert.ok(hostProviderId, "应能取到房主 provider id");
+
+  const res = await createRoom(BASE, "安全测试房主", hostUserToken);
   assert.equal(res.status, 200);
   created = res.data;
   hostToken = created.memberToken;
@@ -79,6 +109,65 @@ before(async () => {
 after(async () => {
   server.proc.kill();
   await stub.close();
+});
+
+test("权限模型：游客只能加入房间（创建 401 / provider 401 / 管理接口 401）", async () => {
+  // 创建房间必须登录
+  const guestCreate = await createRoom(BASE, "游客房主");
+  assert.equal(guestCreate.status, 401);
+  // 游客不能配置 provider
+  const guestProviders = await fetch(`${BASE}/api/me/providers`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ providers: [] }),
+  });
+  assert.equal(guestProviders.status, 401);
+  // 游客不能访问管理接口
+  const guestAdmin = await getJson(BASE, "/api/admin/users");
+  assert.equal(guestAdmin.status, 401);
+  // 注册接口已关闭（路由不存在）
+  const register = await postJson(BASE, "/api/auth/register", { username: "evil", password: "pw1234" });
+  assert.equal(register.status, 404);
+});
+
+test("账户管理：非管理员 403；管理员可创建/删除/重置密码", async () => {
+  const nonAdmin = await loginUser(BASE, HOST_USER, HOST_PASS);
+  const forbidden = await getJson(BASE, "/api/admin/users", nonAdmin);
+  assert.equal(forbidden.status, 403);
+
+  const adminToken = await loginUser(BASE, ADMIN_USER, ADMIN_PASS);
+  const list = await getJson(BASE, "/api/admin/users", adminToken);
+  assert.equal(list.status, 200);
+  const users = (list.data.users as { username: string; role: string }[]) ?? [];
+  assert.ok(users.some((u) => u.role === "admin" && u.username === ADMIN_USER));
+  assert.ok(users.some((u) => u.username === HOST_USER));
+
+  // 创建 + 重置密码 + 删除
+  const createdUser = await postJson(BASE, "/api/admin/users", { username: "tempuser", password: "pw1234" }, adminToken);
+  assert.equal(createdUser.status, 200);
+  const reset = await postJson(BASE, "/api/admin/users/tempuser/password", { password: "newpw5678" }, adminToken);
+  assert.equal(reset.status, 200);
+  const relogin = await loginUser(BASE, "tempuser", "newpw5678");
+  assert.ok(relogin.length > 20);
+  // 非管理员删除 → 403；管理员删除 → 200；删除后令牌立即失效
+  const delForbidden = await fetch(`${BASE}/api/admin/users/tempuser`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${nonAdmin}` },
+  });
+  assert.equal(delForbidden.status, 403);
+  const del = await fetch(`${BASE}/api/admin/users/tempuser`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  assert.equal(del.status, 200);
+  const afterDel = await getJson(BASE, "/api/me", relogin);
+  assert.equal(afterDel.status, 401, "被删用户令牌应立即失效");
+  // 不能删除自己 / 最后一个管理员
+  const delSelf = await fetch(`${BASE}/api/admin/users/${ADMIN_USER}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  assert.equal(delSelf.status, 400);
 });
 
 test("创建房间：返回房间号 + 邀请码 + 房主成员令牌", () => {
@@ -133,59 +222,90 @@ test("WS 入场：无令牌 / 伪造令牌 → 拒绝；有效观众令牌 → w
   ws.close();
 });
 
-test("浏览/搜索：观众 403（不能浏览未授权目录），无令牌 401，房主 200", async () => {
+test("浏览/搜索：观众 403（不能浏览未授权目录），无令牌 401，房主 200（需本人 provider）", async () => {
   const v = await joinRoom(BASE, created.roomId, "浏览观众", created.inviteCode);
-  const viewerBrowse = await getJson(BASE, `/api/browse?room=${created.roomId}&path=/`, v.data.memberToken);
+  const viewerBrowse = await getJson(BASE, `/api/browse?room=${created.roomId}&provider=${hostProviderId}&path=/`, v.data.memberToken, { "X-User-Token": hostUserToken });
   assert.equal(viewerBrowse.status, 403);
-  const anonBrowse = await getJson(BASE, `/api/browse?room=${created.roomId}&path=/`);
+  const anonBrowse = await getJson(BASE, `/api/browse?room=${created.roomId}&provider=${hostProviderId}&path=/`);
   assert.equal(anonBrowse.status, 401);
-  const hostBrowse = await getJson(BASE, `/api/browse?room=${created.roomId}&path=/movies`, hostToken);
+  // 房主浏览必须用创建者本人的用户令牌：缺失 → 401，他人令牌 → 403
+  const noUserToken = await getJson(BASE, `/api/browse?room=${created.roomId}&provider=${hostProviderId}&path=/movies`, hostToken);
+  assert.equal(noUserToken.status, 401);
+  const adminToken2 = await loginUser(BASE, ADMIN_USER, ADMIN_PASS);
+  const wrongUser = await getJson(
+    BASE,
+    `/api/browse?room=${created.roomId}&provider=${hostProviderId}&path=/movies`,
+    hostToken,
+    { "X-User-Token": adminToken2 },
+  );
+  assert.equal(wrongUser.status, 403);
+  const hostBrowse = await getJson(
+    BASE,
+    `/api/browse?room=${created.roomId}&provider=${hostProviderId}&path=/movies`,
+    hostToken,
+    { "X-User-Token": hostUserToken },
+  );
   assert.equal(hostBrowse.status, 200);
   const content = hostBrowse.data.content as { name: string; isDir: boolean }[];
   assert.ok(content.some((c) => c.name === "a.mkv" && !c.isDir));
 
   const viewerSearch = await getJson(
     BASE,
-    `/api/search?room=${created.roomId}&keywords=mkv`,
+    `/api/search?room=${created.roomId}&provider=${hostProviderId}&keywords=mkv`,
     v.data.memberToken,
+    { "X-User-Token": hostUserToken },
   );
   assert.equal(viewerSearch.status, 403);
   const hostSearch = await getJson(
     BASE,
-    `/api/search?room=${created.roomId}&keywords=mkv`,
+    `/api/search?room=${created.roomId}&provider=${hostProviderId}&keywords=mkv`,
     hostToken,
+    { "X-User-Token": hostUserToken },
   );
   assert.equal(hostSearch.status, 200);
   assert.ok(((hostSearch.data.content as unknown[]) ?? []).length >= 1);
 });
 
-test("注册媒体：观众 403；房主注册成功返回不透明 mediaId + 自动注册外挂字幕", async () => {
+test("注册媒体：观众 403；房主用本人 provider 注册成功返回不透明 mediaId + 自动注册外挂字幕", async () => {
   const v = await joinRoom(BASE, created.roomId, "注册观众", created.inviteCode);
   const viewerReg = await postJson(
     BASE,
     `/api/rooms/${created.roomId}/media`,
-    { path: "/movies/a.mkv" },
+    { provider: hostProviderId, path: "/movies/a.mkv" },
     v.data.memberToken,
+    { "X-User-Token": hostUserToken },
   );
   assert.equal(viewerReg.status, 403);
 
   const hostReg = await postJson(
     BASE,
     `/api/rooms/${created.roomId}/media`,
-    { path: "/movies/a.mkv" },
+    { provider: hostProviderId, path: "/movies/a.mkv" },
     hostToken,
+    { "X-User-Token": hostUserToken },
   );
   assert.equal(hostReg.status, 200);
   assert.match(String(hostReg.data.mediaId), /^m_[a-z0-9]{8}$/);
   const related = (hostReg.data.related as { name: string; mediaId: string }[]) ?? [];
   assert.ok(related.some((r) => r.name === "a.srt"), "外挂字幕应自动注册");
 
+  // 环境变量 OpenList 已移除：不带 provider 直接 400，不触及任何 OpenList
+  const noProvider = await postJson(
+    BASE,
+    `/api/rooms/${created.roomId}/media`,
+    { path: "/movies/a.mkv" },
+    hostToken,
+    { "X-User-Token": hostUserToken },
+  );
+  assert.equal(noProvider.status, 400);
+
   // 路径穿越：直接 400，不触及 OpenList
   const traversal = await postJson(
     BASE,
     `/api/rooms/${created.roomId}/media`,
-    { path: "/../secret.mkv" },
+    { provider: hostProviderId, path: "/../secret.mkv" },
     hostToken,
+    { "X-User-Token": hostUserToken },
   );
   assert.equal(traversal.status, 400);
 
@@ -193,8 +313,9 @@ test("注册媒体：观众 403；房主注册成功返回不透明 mediaId + �
   const again = await postJson(
     BASE,
     `/api/rooms/${created.roomId}/media`,
-    { path: "/movies/a.mkv" },
+    { provider: hostProviderId, path: "/movies/a.mkv" },
     hostToken,
+    { "X-User-Token": hostUserToken },
   );
   assert.equal(again.data.mediaId, hostReg.data.mediaId);
 });
@@ -217,12 +338,13 @@ test("grant：无令牌 401；未注册 mediaId 404；跨房间 mediaId 404；�
   assert.equal(unknown.status, 404);
 
   // 跨房间：另一个房间的媒体在本房间不可见（不暴露存在性）
-  const other = await createRoom(BASE, "另一房主");
+  const other = await createRoom(BASE, "另一房主", hostUserToken);
   const otherReg = await postJson(
     BASE,
     `/api/rooms/${other.data.roomId}/media`,
-    { path: "/movies/b.mp4" },
+    { provider: hostProviderId, path: "/movies/b.mp4" },
     other.data.memberToken,
+    { "X-User-Token": hostUserToken },
   );
   const cross = await getJson(
     BASE,

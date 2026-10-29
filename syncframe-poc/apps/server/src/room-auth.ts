@@ -78,6 +78,8 @@ export interface RoomRecord {
   hostClientId: string;
   /** 房主昵称（房间列表展示）。 */
   hostName: string;
+  /** 创建者账户（用户名）：provider 媒体操作只允许房主本人账户（游客无权创建房间）。 */
+  hostUser: string;
   media: Map<string, MediaEntry>;
   members: Map<string, MemberRecord>; // key = memberToken
 }
@@ -154,7 +156,7 @@ export class RoomRegistry {
   }
 
   /** 创建房间：创建者即房主（memberToken 直接签发）；hostSecret 用于房主重建会话。 */
-  createRoom(hostName: string, hostClientId?: string): {
+  createRoom(hostName: string, hostUser: string, hostClientId?: string): {
     room: RoomRecord;
     member: MemberRecord;
     hostSecret: string;
@@ -171,6 +173,7 @@ export class RoomRegistry {
       lastActiveAt: this.now(),
       hostClientId: "",
       hostName: name,
+      hostUser,
       media: new Map(),
       members: new Map(),
     };
@@ -344,11 +347,16 @@ export class RoomRegistry {
       .map((e) => ({ mediaId: e.mediaId, name: e.name, size: e.size }));
   }
 
-  /** 解析 mediaId → 路径（仅服务端内部使用）。 */
+  /** 解析 mediaId → 条目（仅服务端内部使用）。 */
   resolveMediaPath(roomId: string, mediaId: string): MediaEntry | null {
     const room = this.rooms.get(roomId);
     if (!room) return null;
     return room.media.get(mediaId) ?? null;
+  }
+
+  /** 房间是否由该账户创建（provider 媒体操作的归属校验）。 */
+  isRoomOwner(roomId: string, username: string): boolean {
+    return this.rooms.get(roomId)?.hostUser === username;
   }
 
   /** 房间媒体清单（成员可见：mediaId + 文件名 + 类型 + provider 标签；不含路径/URL）。 */

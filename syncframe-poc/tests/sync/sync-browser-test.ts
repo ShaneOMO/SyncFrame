@@ -19,7 +19,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { createRoom, joinRoom, type CreatedRoom, type RoomMember } from "../p3/room-api.ts";
+import { ADMIN_PASS, ADMIN_USER, createRoom, createUserAsAdmin, joinRoom, loginUser, type CreatedRoom, type RoomMember } from "../p3/room-api.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const BACKEND_PORT = 8899;
@@ -135,6 +135,8 @@ async function main(): Promise<void> {
       ...process.env,
       SERVER_PORT: String(BACKEND_PORT),
       SYNC_BACKEND_PORT: String(BACKEND_PORT),
+      ADMIN_USERNAME: ADMIN_USER,
+      ADMIN_PASSWORD: ADMIN_PASS,
       SYNC_INJECT_LATENCY_MS: RTT > 0 ? String(RTT / 2) : "0",
       SYNC_INJECT_JITTER_MS: RTT > 0 ? "30" : "0",
     },
@@ -147,9 +149,17 @@ async function main(): Promise<void> {
   await waitHttp(`http://localhost:${WEB_PORT}/room.html`);
   console.log("后端 + Vite 已就绪");
 
-  // P3：创建房间，房主 + 观众均经 /join 拿成员令牌（浏览器页凭会话存储入场）
+  // P3：创建房间，房主 + 观众均经 /join 拿成员令牌（创建必须登录：管理员建测试账户）
   const backendBase = `http://localhost:${BACKEND_PORT}`;
-  const created = (await createRoom(backendBase, "Host")).data as CreatedRoom;
+  const adminToken = await loginUser(backendBase, ADMIN_USER, ADMIN_PASS);
+  const browserHostUser = "browserhost";
+  try {
+    await createUserAsAdmin(backendBase, adminToken, browserHostUser, "browserpw123");
+  } catch {
+    /* 已存在则复用 */
+  }
+  const hostUserToken = await loginUser(backendBase, browserHostUser, "browserpw123");
+  const created = (await createRoom(backendBase, "Host", hostUserToken)).data as CreatedRoom;
   ROOM = created.roomId;
   const joinViewer = async (name: string): Promise<RoomMember> => {
     const res = await joinRoom(backendBase, ROOM, name, created.inviteCode);

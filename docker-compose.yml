@@ -1,15 +1,15 @@
-# SyncFrame P3 一键测试环境
+# SyncFrame 一键部署环境
 #
-# 用法（仓库根目录 = syncframe-poc 的上级，即包含本文件的目录）：
+# 用法（仓库根目录 = 包含本文件的目录）：
 #   docker compose up --build
 # 然后浏览器打开 http://localhost:7300/lobby.html
 #
 # 服务：
 #   - web：nginx 托管 Vite 构建产物，/api 与 /ws 反代到 server
-#   - server：Node 验证后端（房间鉴权 + 同步 + OpenList 选片/授权）
+#   - server：Node 后端（账户权限 + 房间鉴权 + 同步 + provider 媒体解析）
 #
-# OpenList 连接通过环境变量注入（不要写入镜像）：
-#   OPENLIST_BASE_URL / OPENLIST_USERNAME / OPENLIST_PASSWORD
+# 管理员账户通过环境变量初始化（注册已关闭，账户全部由管理员管理）：
+#   ADMIN_USERNAME / ADMIN_PASSWORD
 
 services:
   server:
@@ -18,9 +18,8 @@ services:
       dockerfile: deploy/server.Dockerfile
     environment:
       SERVER_PORT: "8787"
-      OPENLIST_BASE_URL: ${OPENLIST_BASE_URL:-}
-      OPENLIST_USERNAME: ${OPENLIST_USERNAME:-}
-      OPENLIST_PASSWORD: ${OPENLIST_PASSWORD:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     expose:
       - "8787"
     restart: unless-stopped

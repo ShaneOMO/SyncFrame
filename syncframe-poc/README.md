@@ -13,4 +13,4 @@ packages/openlist-adapter/ # OpenList API 适配器
 tests/                     # p2 协议仿真 / p3 安全 + UI 冒烟 / p4 provider 单测 + 移动端检查
 ```
 
-媒体来源（provider）：服务端环境变量的 OpenList、房主私有 OpenList / Bilibili（登录后配置凭据）、内置直链与 B 站解析（免配置）。Bilibili 流由服务端反代（`/stream` 透传 Range）。
+媒体来源（provider）：房主本人账户的 OpenList（登录后在 provider 配置中保存凭据）、Bilibili（可选 SESSDATA）、内置直链与 B 站解析（免配置）。Bilibili 流由服务端反代（`/stream` 透传 Range）。注册已关闭：管理员由 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 环境变量初始化，负责创建全部账户。

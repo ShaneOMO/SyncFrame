@@ -1,6 +1,9 @@
 /**
  * P3 房间 API 测试助手：创建/加入房间的 HTTP 封装 + 服务端子进程管理。
  * 供 security.test.ts、e2e-smoke、P2 测试改造共用。
+ *
+ * 权限模型（注册已关闭）：服务端以 ADMIN_USERNAME/ADMIN_PASSWORD 环境变量初始化管理员；
+ * 测试用 startServer 传入该环境变量，然后 loginUser 登录、createUserAsAdmin 创建普通账户。
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -8,6 +11,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+export const ADMIN_USER = "testadmin";
+export const ADMIN_PASS = "adminpw123";
 
 export interface RoomMember {
   memberToken: string;
@@ -22,7 +28,7 @@ export interface CreatedRoom extends RoomMember {
   hostSecret: string;
 }
 
-export async function postJson(base: string, url: string, body: unknown, token?: string): Promise<{
+export async function postJson(base: string, url: string, body: unknown, token?: string, extraHeaders: Record<string, string> = {}): Promise<{
   status: number;
   data: Record<string, unknown>;
 }> {
@@ -31,27 +37,46 @@ export async function postJson(base: string, url: string, body: unknown, token?:
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
   });
   return { status: res.status, data: (await res.json().catch(() => ({}))) as Record<string, unknown> };
 }
 
-export async function getJson(base: string, url: string, token?: string): Promise<{
+export async function getJson(base: string, url: string, token?: string, extraHeaders: Record<string, string> = {}): Promise<{
   status: number;
   data: Record<string, unknown>;
 }> {
   const res = await fetch(`${base}${url}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extraHeaders },
   });
   return { status: res.status, data: (await res.json().catch(() => ({}))) as Record<string, unknown> };
 }
 
-export function createRoom(base: string, name = "房主", clientId?: string): Promise<{
+/** 登录账户 → userToken。 */
+export async function loginUser(base: string, username: string, password: string): Promise<string> {
+  const res = await postJson(base, "/api/auth/login", { username, password });
+  if (res.status !== 200 || typeof res.data.userToken !== "string") {
+    throw new Error(`登录失败 ${username}: HTTP ${res.status} ${JSON.stringify(res.data)}`);
+  }
+  return res.data.userToken;
+}
+
+/** 管理员创建普通账户并返回其用户名。 */
+export async function createUserAsAdmin(base: string, adminToken: string, username: string, password = "userpw123"): Promise<void> {
+  const res = await postJson(base, "/api/admin/users", { username, password }, adminToken);
+  if (res.status !== 200) {
+    throw new Error(`创建用户失败 ${username}: HTTP ${res.status} ${JSON.stringify(res.data)}`);
+  }
+}
+
+/** 创建房间：必须携带创建者账户的用户令牌（游客 401）。 */
+export function createRoom(base: string, name = "房主", userToken = "", clientId?: string): Promise<{
   status: number;
   data: CreatedRoom;
 }> {
-  return postJson(base, "/api/rooms", { name, ...(clientId ? { clientId } : {}) }) as unknown as Promise<{
+  return postJson(base, "/api/rooms", { name, ...(clientId ? { clientId } : {}) }, userToken) as unknown as Promise<{
     status: number;
     data: CreatedRoom;
   }>;
@@ -76,7 +101,7 @@ export interface SpawnedServer {
   stdout: string;
 }
 
-/** 启动真实服务端子进程；OPENLIST_* 由调用方在 env 中给出。 */
+/** 启动真实服务端子进程；ADMIN_USERNAME/ADMIN_PASSWORD 由调用方在 env 中给出。 */
 export async function startServer(port: number, env: Record<string, string> = {}): Promise<SpawnedServer> {
   const proc = spawn(process.execPath, ["--import", "tsx", "apps/server/src/index.ts"], {
     cwd: repoRoot,

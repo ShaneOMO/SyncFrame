@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { startOpenListStub } from "./openlist-stub.ts";
-import { createRoom, joinRoom, repoRoot } from "./room-api.ts";
+import { ADMIN_PASS, ADMIN_USER, createRoom, joinRoom, repoRoot } from "./room-api.ts";
 
 const BACKEND_PORT = 8940;
 const STUB_PORT = 8941;
@@ -43,9 +43,8 @@ async function main(): Promise<void> {
     env: {
       ...process.env,
       SERVER_PORT: String(BACKEND_PORT),
-      OPENLIST_BASE_URL: `http://localhost:${STUB_PORT}`,
-      OPENLIST_USERNAME: "stub",
-      OPENLIST_PASSWORD: "stub",
+      ADMIN_USERNAME: ADMIN_USER,
+      ADMIN_PASSWORD: ADMIN_PASS,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -78,6 +77,26 @@ async function main(): Promise<void> {
     });
     await host.goto(`http://localhost:${WEB_PORT}/lobby.html`, { waitUntil: "domcontentloaded" });
     check("大厅页加载无 JS 错误", consoleErrors.length === 0, consoleErrors.join(" | "));
+    // 未登录：创建房间被隐藏，只能加入房间
+    check("游客态隐藏创建房间表单", await host.locator("#createForm").isHidden());
+    check("游客态显示登录提示", await host.locator("#createGate").isVisible());
+    // 登录管理员并在弹窗里配置 OpenList provider（指向桩）
+    await host.click("#loginBtn");
+    await host.fill("#authUsername", ADMIN_USER);
+    await host.fill("#authPassword", ADMIN_PASS);
+    await host.click("#authSubmit");
+    await host.waitForSelector("#providerPanel:not([hidden])", { timeout: 10_000 });
+    check("登录后显示 provider 面板", true);
+    check("管理员显示账户管理面板", await host.locator("#adminPanel").isVisible());
+    await host.selectOption("#pKind", "openlist");
+    await host.fill("#pLabel", "桩");
+    await host.fill("#pBaseUrl", `http://localhost:${STUB_PORT}`);
+    await host.fill("#pUsername", "stub");
+    await host.fill("#pPassword", "stub");
+    await host.click("#pAdd");
+    await host.waitForFunction(() => document.querySelector("#providerMsg")?.textContent === "已保存", { timeout: 10_000 });
+    check("添加 OpenList provider", true);
+    await host.click("#authClose");
     await host.fill("#createName", "UI房主");
     await host.click("#createBtn");
     await host.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
@@ -95,6 +114,7 @@ async function main(): Promise<void> {
     const invite = await host.evaluate(() => sessionStorage.getItem(`syncframe-invite-${new URL(location.href).searchParams.get("room")}`) ?? "");
     check("邀请码已存会话（6 位）", /^[A-Z2-9]{6}$/.test(invite), invite);
     check("选片面板对房主可见", await host.locator("#browseCard").isVisible());
+    check("浏览面板含 provider 选择器", (await host.locator("#browseProvider option").allTextContents()).some((t) => t.includes("桩")));
     await host.waitForSelector("#browseList .browse-row", { timeout: 10_000 });
     check("目录列表已加载（根目录含 movies）", (await host.locator("#browseList .browse-row").allTextContents()).join(" ").includes("movies"));
 

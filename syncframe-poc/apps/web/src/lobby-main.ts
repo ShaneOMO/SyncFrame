@@ -1,9 +1,9 @@
 /**
- * P4 大厅页：
+ * 大厅页：
  * - 房间列表：GET /api/rooms 展示本实例活跃房间（房间号/房主/人数/视频数），点击房间号填入加入表单；
- * - 右上角登录按钮：注册/登录账户（localStorage 存用户令牌），登录后可配置自己的视频 provider
- *   （OpenList 凭据只存服务端内存；直链 provider 内置无需配置）；
- * - 创建房间 / 凭邀请码加入房间（P3 行为不变）。
+ * - 右上角登录按钮：仅登录（注册已关闭，账户由管理员创建）；登录后可配置自己的视频 provider
+ *   （OpenList 凭据 / Bilibili cookie 只存服务端内存；直链与 B 站免配置）；
+ * - 权限模型：游客只能凭邀请码加入房间；创建房间必须登录；管理员额外拥有账户管理面板。
  *
  * 加入成功后把成员令牌写入 sessionStorage（见 session.ts），
  * 再跳转 /room.html?room=<id>&name=<n>；房间页据此恢复会话，令牌过期则回到本页。
@@ -27,10 +27,10 @@ const params = new URLSearchParams(location.search);
 if (params.get("room")) ($("#joinRoom") as HTMLInputElement).value = params.get("room")!;
 if (params.get("expired")) msg("成员凭证已过期，请重新加入房间");
 
-async function postJson(url: string, body: unknown): Promise<Record<string, unknown>> {
+async function postJson(url: string, body: unknown, token?: string): Promise<Record<string, unknown>> {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(body),
   });
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
@@ -59,11 +59,17 @@ function enterRoom(
 
 $("#createBtn").addEventListener("click", async () => {
   msg("");
-  const name = ($("#createName") as HTMLInputElement).value.trim() || "房主";
+  if (!user) {
+    msg("创建房间需要先登录（右上角「登录」）；游客可凭邀请码加入房间");
+    openModal();
+    return;
+  }
+  const name = ($("#createName") as HTMLInputElement).value.trim() || user.username;
   const btn = $("#createBtn") as HTMLButtonElement;
   btn.disabled = true;
   try {
-    const data = await postJson("/api/rooms", { name });
+    // 创建房间必须登录：携带用户令牌（服务端游客 401）。
+    const data = await postJson("/api/rooms", { name }, user.token);
     const roomId = String(data.roomId);
     // 邀请码/hostSecret 只在创建响应里出现一次：存进 sessionStorage 供房间页展示与房主重建会话。
     sessionStorage.setItem(`syncframe-invite-${roomId}`, String(data.inviteCode));
@@ -201,14 +207,20 @@ function loadUser(): UserState | null {
 }
 
 let user = loadUser();
-let authMode: "login" | "register" = "login";
 
 const authModal = $("#authModal") as HTMLElement;
 const authFormsEl = $("#authForms") as HTMLElement;
 const providerPanelEl = $("#providerPanel") as HTMLElement;
+const adminPanelEl = $("#adminPanel") as HTMLElement;
 
 function userHeaders(): Record<string, string> {
   return user ? { Authorization: `Bearer ${user.token}` } : {};
+}
+
+/** 创建房间卡片：未登录时只显示登录提示（游客只能加入房间）。 */
+function renderCreateGate(): void {
+  ($("#createGate") as HTMLElement).hidden = Boolean(user);
+  ($("#createForm") as HTMLElement).hidden = !user;
 }
 
 /** 拉取 /api/me 刷新登录态与 provider 列表；令牌失效则登出。 */
@@ -218,16 +230,22 @@ async function refreshAuthState(): Promise<void> {
     btnText.textContent = "登录";
     authFormsEl.hidden = false;
     providerPanelEl.hidden = true;
+    renderCreateGate();
     return;
   }
   try {
     const res = await fetch("/api/me", { headers: userHeaders() });
     if (!res.ok) throw new Error("expired");
-    const body = (await res.json()) as { username: string; providers: PublicProvider[] };
+    const body = (await res.json()) as { username: string; role?: string; providers: PublicProvider[] };
     btnText.textContent = body.username;
     authFormsEl.hidden = true;
     providerPanelEl.hidden = false;
     renderProviders(body.providers);
+    renderCreateGate();
+    // 管理员额外显示账户管理面板。
+    const isAdmin = body.role === "admin";
+    adminPanelEl.hidden = !isAdmin;
+    if (isAdmin) void refreshAdminUsers();
   } catch {
     // 服务端重启等导致令牌失效：清理本地状态回登录态。
     user = null;
@@ -235,6 +253,7 @@ async function refreshAuthState(): Promise<void> {
     btnText.textContent = "登录";
     authFormsEl.hidden = false;
     providerPanelEl.hidden = true;
+    renderCreateGate();
   }
 }
 
@@ -252,24 +271,14 @@ authModal.addEventListener("click", (e) => {
   if (e.target === authModal) closeModal();
 });
 
-function setAuthMode(mode: "login" | "register"): void {
-  authMode = mode;
-  $("#tabLogin").classList.toggle("active", mode === "login");
-  $("#tabRegister").classList.toggle("active", mode === "register");
-  ($("#authSubmit") as HTMLButtonElement).textContent = mode === "login" ? "登录" : "注册并登录";
-  $("#authMsg").textContent = "";
-}
-$("#tabLogin").addEventListener("click", () => setAuthMode("login"));
-$("#tabRegister").addEventListener("click", () => setAuthMode("register"));
-setAuthMode("login");
-
 $("#authSubmit").addEventListener("click", async () => {
   const username = ($("#authUsername") as HTMLInputElement).value;
   const password = ($("#authPassword") as HTMLInputElement).value;
   const msgEl2 = $("#authMsg");
   msgEl2.textContent = "";
   try {
-    const data = await postJson(`/api/auth/${authMode}`, { username, password });
+    // 注册已关闭：只有登录。账户由管理员在「账户管理」中创建。
+    const data = await postJson("/api/auth/login", { username, password });
     user = { token: String(data.userToken), username: String(data.username ?? username).trim() };
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     ($("#authPassword") as HTMLInputElement).value = "";
@@ -283,6 +292,105 @@ $("#logoutBtn").addEventListener("click", () => {
   user = null;
   localStorage.removeItem(USER_KEY);
   void refreshAuthState();
+});
+
+// ── 管理员：账户创建/删除/重置密码（注册已关闭，账户只能由管理员创建）─────────
+
+interface AdminUser {
+  username: string;
+  role: "admin" | "user";
+  providerCount: number;
+}
+
+async function refreshAdminUsers(): Promise<void> {
+  const msgEl2 = $("#adminMsg");
+  try {
+    const res = await fetch("/api/admin/users", { headers: userHeaders() });
+    const body = (await res.json().catch(() => ({}))) as { users?: AdminUser[]; error?: string };
+    if (!res.ok || !body.users) {
+      msgEl2.textContent = body.error ?? `HTTP ${res.status}`;
+      return;
+    }
+    const listEl = $("#adminUserList");
+    listEl.textContent = "";
+    for (const u of body.users) {
+      const row = document.createElement("div");
+      row.className = "provider-row";
+      const role = document.createElement("span");
+      role.className = "kind";
+      role.textContent = u.role === "admin" ? "管理员" : "用户";
+      const name = document.createElement("b");
+      name.textContent = u.username;
+      const meta = document.createElement("span");
+      meta.className = "url";
+      meta.textContent = `${u.providerCount} 个 provider`;
+      row.append(role, name, meta);
+      const reset = document.createElement("button");
+      reset.textContent = "重置密码";
+      reset.addEventListener("click", () => {
+        const pw = prompt(`为 ${u.username} 设置新密码（至少 4 位）：`);
+        if (!pw) return;
+        void (async () => {
+          const r = await fetch(`/api/admin/users/${encodeURIComponent(u.username)}/password`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...userHeaders() },
+            body: JSON.stringify({ password: pw }),
+          });
+          const b = (await r.json().catch(() => ({}))) as { error?: string };
+          msgEl2.textContent = r.ok ? `已重置 ${u.username} 的密码` : (b.error ?? `HTTP ${r.status}`);
+        })();
+      });
+      row.appendChild(reset);
+      if (u.username !== user?.username) {
+        const del = document.createElement("button");
+        del.className = "danger";
+        del.textContent = "删除";
+        del.addEventListener("click", () => {
+          if (!confirm(`确定删除账户 ${u.username}？其凭据与会话将立即失效。`)) return;
+          void (async () => {
+            const r = await fetch(`/api/admin/users/${encodeURIComponent(u.username)}`, {
+              method: "DELETE",
+              headers: userHeaders(),
+            });
+            const b = (await r.json().catch(() => ({}))) as { error?: string };
+            msgEl2.textContent = r.ok ? `已删除 ${u.username}` : (b.error ?? `HTTP ${r.status}`);
+            if (r.ok) void refreshAdminUsers();
+          })();
+        });
+        row.appendChild(del);
+      }
+      listEl.appendChild(row);
+    }
+  } catch (err) {
+    msgEl2.textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+$("#aCreate").addEventListener("click", () => {
+  const msgEl2 = $("#adminMsg");
+  msgEl2.textContent = "";
+  const username = ($("#aNewUsername") as HTMLInputElement).value.trim();
+  const password = ($("#aNewPassword") as HTMLInputElement).value;
+  void (async () => {
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...userHeaders() },
+        body: JSON.stringify({ username, password }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        msgEl2.textContent = body.error ?? `HTTP ${res.status}`;
+        return;
+      }
+      msgEl2.textContent = `已创建账户 ${username}`;
+      ($("#aNewUsername") as HTMLInputElement).value = "";
+      ($("#aNewPassword") as HTMLInputElement).value = "";
+      void refreshAdminUsers();
+    } catch (err) {
+      msgEl2.textContent = err instanceof Error ? err.message : String(err);
+    }
+  })();
 });
 
 function renderProviders(providers: PublicProvider[]): void {

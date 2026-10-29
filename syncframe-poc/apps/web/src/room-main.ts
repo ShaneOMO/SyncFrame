@@ -474,44 +474,67 @@ $("#joinPlay").addEventListener("click", () => {
 
 // ── 房主控制 ──────────────────────────────────────────────
 
-// player 模式：OpenList 媒体库 → 注册 mediaId → 广播 load
+// player 模式：OpenList 媒体库 → 注册 mediaId → 广播 load（使用房主本人账户的 provider）
 if (mode === "player" && role === "host") {
-  $("#browseCard").hidden = false;
-  initBrowsePanel({
-    roomId,
-    getToken: () => memberToken,
-    onStatus: (line, warn) => setStatus(line, warn),
-    onPick: (file) => {
-      void (async () => {
-        setStatus(`正在添加视频: ${file.name}…`);
-        try {
-          const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/media`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...authHeaders },
-            body: JSON.stringify({ path: file.path }),
-          });
-          const body = (await res.json().catch(() => ({}))) as {
-            mediaId?: string;
-            name?: string;
-            size?: number;
-            related?: { mediaId: string; name: string }[];
-            error?: string;
-          };
-          if (!res.ok || !body.mediaId) {
-            setStatus(`添加视频失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, true);
-            return;
+  void (async () => {
+    const providers = (await fetchMyProviders()).filter((p) => p.kind === "openlist");
+    if (providers.length === 0) {
+      // 没有 OpenList provider：隐藏浏览面板（仍可用直链 / B 站添加）。
+      setStatus("未配置 OpenList provider：可在「添加视频」中直接用直链或 B 站链接（登录后也可配置 OpenList）", true);
+      return;
+    }
+    $("#browseCard").hidden = false;
+    const providerSel = $("#browseProvider") as HTMLSelectElement;
+    providerSel.textContent = "";
+    for (const p of providers) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = `${p.label}（${p.baseUrl}）`;
+      providerSel.appendChild(o);
+    }
+    const browse = initBrowsePanel({
+      roomId,
+      getToken: () => memberToken,
+      getUserToken: () => localUser?.token ?? null,
+      getProviderId: () => providerSel.value,
+      onStatus: (line, warn) => setStatus(line, warn),
+      onPick: (file) => {
+        void (async () => {
+          setStatus(`正在添加视频: ${file.name}…`);
+          try {
+            const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/media`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...authHeaders,
+                ...(localUser ? { "X-User-Token": localUser.token } : {}),
+              },
+              body: JSON.stringify({ provider: providerSel.value, path: file.path }),
+            });
+            const body = (await res.json().catch(() => ({}))) as {
+              mediaId?: string;
+              name?: string;
+              size?: number;
+              related?: { mediaId: string; name: string }[];
+              error?: string;
+            };
+            if (!res.ok || !body.mediaId) {
+              setStatus(`添加视频失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, true);
+              return;
+            }
+            setStatus(
+              `已注册 ${body.name}（外挂字幕 ${body.related?.length ?? 0} 个）`,
+            );
+            await client.hostLoad(body.mediaId, { name: body.name ?? file.name, size: body.size ?? file.size });
+            refreshMediaList();
+          } catch (err) {
+            setStatus(`添加视频失败: ${err instanceof Error ? err.message : err}`, true);
           }
-          setStatus(
-            `已注册 ${body.name}（外挂字幕 ${body.related?.length ?? 0} 个）`,
-          );
-          await client.hostLoad(body.mediaId, { name: body.name ?? file.name, size: body.size ?? file.size });
-          refreshMediaList();
-        } catch (err) {
-          setStatus(`添加视频失败: ${err instanceof Error ? err.message : err}`, true);
-        }
-      })();
-    },
-  });
+        })();
+      },
+    });
+    providerSel.addEventListener("change", () => browse.reload());
+  })();
 }
 
 // P4：手动添加视频（仅房主）：选择 provider → 直链填 URL / OpenList 填路径 → 注册进播放列表。
