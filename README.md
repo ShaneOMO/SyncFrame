@@ -86,7 +86,7 @@ npm run p1:web
 docker compose up --build -d
 ```
 
-构建并启动单个容器，然后浏览器打开 **http://localhost:7300/**（自动进入大厅）。
+构建并启动单个容器，然后浏览器打开 http://localhost:7300/（自动进入大厅）。
 
 管理员账户通过环境变量注入（**不写入镜像**）。在仓库根目录建一个 `.env`
 （compose 会自动读取，该文件已被 gitignore）：
