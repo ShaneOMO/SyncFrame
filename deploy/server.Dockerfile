@@ -17,6 +17,7 @@ RUN npm ci --no-audit --no-fund && npm run build -w @syncframe/web
 
 ENV SERVER_PORT=8787
 ENV WEB_DIST=/app/apps/web/dist
+ENV DATA_DIR=/app/data
 EXPOSE 8787
 
 CMD ["npx", "tsx", "apps/server/src/index.ts"]

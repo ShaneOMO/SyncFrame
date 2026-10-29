@@ -11,7 +11,7 @@ OpenList 媒体字节由播放器直连拉取，Bilibili 流经服务端反代�
 ## 权限模型
 
 - **游客（无需账户）**：只能凭邀请码加入房间观看；不能创建房间、不能配置 provider
-- **用户（登录）**：可创建房间；在「我的视频 provider」中保存自己的 OpenList 凭据 / Bilibili SESSDATA（只存服务端内存）
+- **用户（登录）**：可创建房间；在「我的视频 provider」中保存自己的 OpenList 凭据 / Bilibili SESSDATA（只存服务端 `./data`，对外不回显）
 - **管理员**：由部署时的环境变量初始化，**注册已关闭**——全部账户由管理员创建 / 删除 / 重置密码
 - 房间的 OpenList 浏览/添加只允许使用**房间创建者本人**的 provider
 
@@ -56,7 +56,8 @@ cp .env.example .env        # Windows: copy .env.example .env
 | --- | --- |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 启动时初始化的管理员账户；之后用它登录，在「账户管理」中创建其他账户 |
 
-> OpenList / Bilibili 凭据**不在 env 配置**：各账户登录后在大厅「我的视频 provider」里自行填写，凭据只存服务端内存。
+> OpenList / Bilibili 凭据**不在 env 配置**：各账户登录后在大厅「我的视频 provider」里自行填写，凭据只存服务端。  
+> 数据持久化：账户（含 provider 凭据）与房间写入 `./data/`（`DATA_DIR` 可改，已 gitignore），重启保留；删除该目录即重置全部数据。用户令牌仍为内存态，重启后需重新登录。
 
 **启动（两个终端）：**
 
@@ -134,5 +135,6 @@ docker compose up --build -d    # 改了代码后重新构建并启动
 **部署注意：**
 
 - 对外端口改 `docker-compose.yml` 里 ports 的 `"7300:8787"` 映射
-- 反向代理与 HTTPS 在最外层配置（见上）；账户凭据与 provider 凭据只存容器内存，重启即失（PoC）
+- 反向代理与 HTTPS 在最外层配置（见上）
+- `./data` 卷持久化账户/房间（含 provider 凭据）：重启容器不丢数据，**注意备份与权限**（不要挂到公共目录）；删除卷内容即重置
 - 容器带 `restart: unless-stopped`，宿主机重启后自动拉起

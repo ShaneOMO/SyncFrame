@@ -24,6 +24,9 @@ services:
       SERVER_PORT: "8787"
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    volumes:
+      # 账户（含 provider 凭据）与房间持久化；含敏感凭据，勿挂载到公共目录
+      - ./data:/app/data
     ports:
       - "7300:8787"
     restart: unless-stopped

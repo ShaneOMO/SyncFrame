@@ -18,6 +18,8 @@
  * - viewer 令牌注册媒体 → 403；未知/过期令牌 → 401；URL 中的 sign 参数不回显给非授权路径。
  */
 
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 
 /** 成员令牌有效期：12h（刷新页面/短期断网重连在窗口内免登录）。 */
@@ -110,6 +112,8 @@ export interface AuditEvent {
 export interface RoomRegistryOptions {
   now?: () => number;
   onAudit?: (ev: AuditEvent) => void;
+  /** 持久化目录：房间（含成员令牌/邀请码/媒体映射）落盘 <dataDir>/rooms.json，重启恢复。 */
+  dataDir?: string | null;
 }
 
 function makeInviteCode(): string {
@@ -133,10 +137,53 @@ export class RoomRegistry {
   private readonly rooms = new Map<string, RoomRecord>();
   private readonly now: () => number;
   private readonly onAudit: (ev: AuditEvent) => void;
+  private readonly file: string | null;
 
   constructor(opts: RoomRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.onAudit = opts.onAudit ?? (() => {});
+    this.file = opts.dataDir ? path.join(opts.dataDir, "rooms.json") : null;
+    if (!this.file) return;
+    try {
+      const raw = JSON.parse(readFileSync(this.file, "utf-8")) as {
+        rooms?: (Omit<RoomRecord, "media" | "members"> & {
+          media?: [string, MediaEntry][];
+          members?: [string, MemberRecord][];
+        })[];
+      };
+      for (const r of raw.rooms ?? []) {
+        this.rooms.set(r.roomId, {
+          ...r,
+          media: new Map(r.media ?? []),
+          members: new Map(r.members ?? []),
+        });
+      }
+    } catch {
+      // 文件不存在或损坏：从空注册表开始。
+    }
+  }
+
+  /** 原子落盘（tmp + rename）；未配置 dataDir 时为无操作。只写非敏感摘要 + 映射，凭据不入此文件。 */
+  private save(): void {
+    if (!this.file) return;
+    try {
+      mkdirSync(path.dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp`;
+      writeFileSync(
+        tmp,
+        JSON.stringify({
+          version: 1,
+          rooms: [...this.rooms.values()].map((r) => ({
+            ...r,
+            media: [...r.media.entries()],
+            members: [...r.members.entries()],
+          })),
+        }),
+      );
+      renameSync(tmp, this.file);
+    } catch (err) {
+      console.warn(`[store] 房间落盘失败: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   audit(ev: AuditEvent): void {
@@ -179,6 +226,7 @@ export class RoomRegistry {
     };
     this.rooms.set(roomId, room);
     const member = this.addMember(room, name, "host", hostClientId);
+    this.save();
     room.hostClientId = member.clientId;
     this.audit({ roomId, action: "room:create", clientId: member.clientId });
     return { room, member, hostSecret };
@@ -215,6 +263,7 @@ export class RoomRegistry {
       if (!opts.inviteCode || opts.inviteCode.toUpperCase() !== room.inviteCode) return null;
     }
     const member = this.addMember(room, name, isHost ? "host" : "viewer", isHost ? room.hostClientId : undefined);
+    this.save();
     this.audit({
       roomId,
       action: isHost ? "room:rejoin-host" : "room:join",
@@ -235,6 +284,7 @@ export class RoomRegistry {
     }
     room.inviteCode = makeInviteCode();
     room.lastActiveAt = this.now();
+    this.save();
     this.audit({ roomId, action: "room:rotate-invite", clientId: member.clientId });
     return { ok: true, inviteCode: room.inviteCode };
   }
@@ -248,6 +298,7 @@ export class RoomRegistry {
     if (!member) return null;
     if (member.expiresAt <= this.now()) {
       room.members.delete(token);
+      this.save();
       this.audit({ roomId, action: "auth:token-expired", clientId: member.clientId });
       return null;
     }
@@ -337,6 +388,7 @@ export class RoomRegistry {
       }
       registered.push({ mediaId: subId, name: r.name, size: r.size });
     }
+    this.save();
     return { mediaId, related: registered };
   }
 
@@ -427,6 +479,7 @@ export class RoomRegistry {
     }
     this.grantCache.clear();
     this.rooms.delete(roomId);
+    this.save();
     this.audit({ roomId, action: "room:dispose" });
   }
 }

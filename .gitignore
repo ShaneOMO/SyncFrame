@@ -18,6 +18,8 @@ build/
 # 运行期数据与报告
 reports/
 **/reports/
+data/
+**/data/
 *.log
 logs/
 

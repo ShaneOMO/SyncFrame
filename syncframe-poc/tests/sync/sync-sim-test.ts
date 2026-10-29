@@ -71,6 +71,7 @@ async function startServer(): Promise<void> {
       env: {
         ...process.env,
         SERVER_PORT: String(PORT),
+        DATA_DIR: path.join(process.env.TEMP ?? "/tmp", "syncframe-sim-" + String(Date.now())),
         ADMIN_USERNAME: ADMIN_USER,
         ADMIN_PASSWORD: ADMIN_PASS,
         SYNC_INJECT_LATENCY_MS: inject ? String(RTT / 2) : "0",

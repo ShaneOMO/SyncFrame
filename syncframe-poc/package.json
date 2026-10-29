@@ -20,7 +20,7 @@
     "p3:security": "node --import tsx --test tests/p3/security.test.ts",
     "p3:e2e": "node --import tsx tests/p3/e2e-smoke.ts",
     "p3:ui": "node --import tsx tests/p3/lobby-ui-smoke.ts",
-    "p4:unit": "node --import tsx --test tests/p4/bilibili-provider.test.ts",
+    "p4:unit": "node --import tsx --test tests/p4/bilibili-provider.test.ts tests/p4/persistence.test.ts",
     "p4:mobile": "node --import tsx tests/p3/mobile-check.ts",
     "typecheck": "tsc --noEmit -p tsconfig.base.json"
   },

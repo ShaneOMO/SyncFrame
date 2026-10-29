@@ -101,11 +101,13 @@ export interface SpawnedServer {
   stdout: string;
 }
 
-/** 启动真实服务端子进程；ADMIN_USERNAME/ADMIN_PASSWORD 由调用方在 env 中给出。 */
+/** 启动真实服务端子进程；ADMIN_USERNAME/ADMIN_PASSWORD 由调用方在 env 中给出。
+ *  默认 DATA_DIR 指向每次运行新建的临时目录（测试间/运行间互不污染）。 */
 export async function startServer(port: number, env: Record<string, string> = {}): Promise<SpawnedServer> {
+  const dataDir = path.join(process.env.TEMP ?? "/tmp", `syncframe-test-${port}-${Date.now()}`);
   const proc = spawn(process.execPath, ["--import", "tsx", "apps/server/src/index.ts"], {
     cwd: repoRoot,
-    env: { ...process.env, SERVER_PORT: String(port), ...env },
+    env: { ...process.env, SERVER_PORT: String(port), DATA_DIR: dataDir, ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const out: SpawnedServer = { proc, stdout: "" };

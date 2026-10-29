@@ -45,7 +45,7 @@ async function diagnose(page: import("playwright-core").Page, label: string): Pr
 async function main(): Promise<void> {
   const server = spawn(process.execPath, ["--import", "tsx", "apps/server/src/index.ts"], {
     cwd: repoRoot,
-    env: { ...process.env, SERVER_PORT: String(BACKEND_PORT), ADMIN_USERNAME: ADMIN_USER, ADMIN_PASSWORD: ADMIN_PASS },
+    env: { ...process.env, SERVER_PORT: String(BACKEND_PORT), DATA_DIR: path.join(process.env.TEMP ?? "/tmp", `syncframe-mobile-${Date.now()}`), ADMIN_USERNAME: ADMIN_USER, ADMIN_PASSWORD: ADMIN_PASS },
     stdio: ["ignore", "pipe", "pipe"],
   });
   server.stderr?.on("data", (d) => process.stderr.write(d));

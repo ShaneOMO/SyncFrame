@@ -1,5 +1,5 @@
 /**
- * 用户账户与视频 provider 配置（PoC：单进程内存存储）。
+ * 用户账户与视频 provider 配置。
  *
  * 权限模型：
  * - 注册接口已关闭；账户由环境变量初始化的管理员创建/删除/管理（见 index.ts 的
@@ -7,11 +7,15 @@
  * - 角色：admin（管理账户）/ user（普通用户）。游客（未登录）只能凭邀请码加入房间，
  *   不能创建房间、不能配置 provider；
  * - 每个用户在自己的 provider 配置里保存 OpenList 凭据 / Bilibili SESSDATA
- *   （凭据只存服务端内存，对外只回显 label/kind/baseUrl，不回显密码与 cookie）。
+ *   （凭据只存服务端，不回显密码与 cookie）。
  *
- * 说明：这是 PoC 级账户系统（重启即失），不是生产鉴权方案。
+ * 持久化：传入 dataDir 后，账户（含 provider 凭据）落盘为 <dataDir>/users.json
+ * （原子写入：tmp + rename）；重启后账户保留，用户令牌仍内存态（重启需重新登录）。
+ * 注意：该文件含凭据，务必保持私有（chmod 600 / 不要提交 git）。
  */
 
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 export type UserRole = "admin" | "user";
@@ -74,6 +78,39 @@ function validateCredentials(username: string, password: string): string | null 
 export class UserAccounts {
   private readonly users = new Map<string, UserRecord>();
   private readonly tokens = new Map<string, { username: string; expiresAt: number }>();
+  /** 持久化文件路径；null = 纯内存（测试/未配置 dataDir）。 */
+  private readonly file: string | null;
+
+  constructor(dataDir: string | null = null) {
+    this.file = dataDir ? path.join(dataDir, "users.json") : null;
+    if (!this.file) return;
+    try {
+      const raw = JSON.parse(readFileSync(this.file, "utf-8")) as {
+        users?: (Omit<UserRecord, "providers"> & { providers?: ProviderConfig[] })[];
+      };
+      for (const u of raw.users ?? []) {
+        this.users.set(u.username, { ...u, providers: new Map((u.providers ?? []).map((p) => [p.id, p])) });
+      }
+    } catch {
+      // 文件不存在或损坏：从空账户开始（损坏时备份由部署者处理）。
+    }
+  }
+
+  /** 原子落盘（tmp + rename）；未配置 dataDir 时为无操作。 */
+  private save(): void {
+    if (!this.file) return;
+    try {
+      mkdirSync(path.dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp`;
+      writeFileSync(
+        tmp,
+        JSON.stringify({ version: 1, users: [...this.users.values()].map((u) => ({ ...u, providers: [...u.providers.values()] })) }),
+      );
+      renameSync(tmp, this.file);
+    } catch (err) {
+      console.warn(`[store] 账户落盘失败: ${err instanceof Error ? err.message : err}`);
+    }
+  }
 
   /**
    * 启动时以环境变量初始化管理员账户：不存在则创建，已存在则提升为 admin。
@@ -85,6 +122,7 @@ export class UserAccounts {
     const existing = this.users.get(name);
     if (existing) {
       existing.role = "admin";
+      this.save();
       return true;
     }
     const invalid = validateCredentials(name, password);
@@ -97,6 +135,7 @@ export class UserAccounts {
       role: "admin",
       providers: new Map(),
     });
+    this.save();
     return true;
   }
 
@@ -143,6 +182,7 @@ export class UserAccounts {
     if (this.users.has(name)) return { ok: false, error: "用户名已存在" };
     const salt = randomBytes(16).toString("hex");
     this.users.set(name, { username: name, salt, hash: hashPassword(password, salt), role: "user", providers: new Map() });
+    this.save();
     return { ok: true };
   }
 
@@ -160,6 +200,7 @@ export class UserAccounts {
     for (const [tok, rec] of this.tokens) {
       if (rec.username === name) this.tokens.delete(tok);
     }
+    this.save();
     return { ok: true };
   }
 
@@ -175,6 +216,7 @@ export class UserAccounts {
     for (const [tok, rec] of this.tokens) {
       if (rec.username === user.username) this.tokens.delete(tok);
     }
+    this.save();
     return { ok: true };
   }
 
@@ -216,6 +258,7 @@ export class UserAccounts {
       }
     }
     user.providers = next;
+    this.save();
     return { ok: true };
   }
 

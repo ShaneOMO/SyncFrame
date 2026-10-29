@@ -43,6 +43,7 @@ async function main(): Promise<void> {
     env: {
       ...process.env,
       SERVER_PORT: String(BACKEND_PORT),
+      DATA_DIR: path.join(process.env.TEMP ?? "/tmp", `syncframe-ui-${Date.now()}`),
       ADMIN_USERNAME: ADMIN_USER,
       ADMIN_PASSWORD: ADMIN_PASS,
     },

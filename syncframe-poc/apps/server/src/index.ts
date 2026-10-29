@@ -54,7 +54,9 @@ const PORT = Number(process.env.SERVER_PORT ?? 8787);
 
 // P4：账户系统。管理员由环境变量初始化（注册接口已关闭）；
 // OpenList / Bilibili 凭据不再来自环境变量，全部由各账户在 provider 配置中自行保存。
-const accounts = new UserAccounts();
+// 持久化：账户与房间落盘 DATA_DIR（默认 ./data，Docker 挂卷），重启保留。
+const DATA_DIR = process.env.DATA_DIR ?? "./data";
+const accounts = new UserAccounts(DATA_DIR);
 if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
   if (accounts.initAdmin(process.env.ADMIN_USERNAME, process.env.ADMIN_PASSWORD)) {
     console.log(`管理员账户已就绪: ${process.env.ADMIN_USERNAME.trim()}`);
@@ -66,7 +68,7 @@ if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
 }
 
 // P3：房间注册表（鉴权 + 媒体受控映射 + 授权缓存）。审计日志不含令牌/URL/路径。
-const registry = new RoomRegistry({  onAudit: (ev) => {
+const registry = new RoomRegistry({  dataDir: DATA_DIR, onAudit: (ev) => {
     const fp = ev.clientId ? ` member=${ev.clientId}` : "";
     const mid = ev.mediaId ? ` media=${ev.mediaId}` : "";
     const detail = ev.detail ? ` ${ev.detail}` : "";
@@ -969,6 +971,7 @@ registrySweep.unref();
 
 server.listen(PORT, () => {
   console.log(`SyncFrame 已启动: http://localhost:${PORT}${WEB_DIST ? "（含前端静态资源，单端口）" : ""}`);
+  console.log(`  数据目录: ${path.resolve(DATA_DIR)}（账户/房间持久化；含凭据，请保持私有）`);
   if (WEB_DIST) console.log(`  静态资源目录: ${WEB_DIST}`);
   else console.log("  提示: 未设置 WEB_DIST，仅提供 API/WS（前端请用 Vite 开发服务器或另行托管）");
   console.log(`  POST /api/auth/login | GET /api/me | PUT /api/me/providers   （账户与 provider；注册已关闭）`);

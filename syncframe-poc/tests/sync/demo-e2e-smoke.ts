@@ -56,6 +56,8 @@ function makeClient(room: string, token: string, role: "host" | "viewer", name: 
 
 async function main(): Promise<void> {
   console.log("启动 p2:demo 后端 (8787) 与 Vite (5173)…");
+  // 持久化指向临时目录，避免污染仓库 data/
+  process.env.DATA_DIR = path.join(process.env.TEMP ?? "/tmp", `syncframe-demo-${Date.now()}`);
   start(process.execPath, ["--import", "tsx", "apps/server/src/index.ts"], repoRoot);
   start(process.execPath, [path.join(repoRoot, "node_modules/vite/bin/vite.js"), "--strictPort"], path.join(repoRoot, "apps/web"));
   await waitHttp("http://localhost:8787/api/health");

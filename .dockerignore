@@ -10,3 +10,7 @@ syncframe-poc/reports
 **/*.log
 shot-*.png
 docs
+
+# 本地运行期持久化数据
+syncframe-poc/data/
+data/
