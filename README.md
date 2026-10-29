@@ -1,8 +1,8 @@
 # SyncFrame
 
 基于 **Movi Player + OpenList** 的多人同步观影室。
-房主从自己挂载的 OpenList 媒体库中添加视频，观众通过邀请链接进房，全房间播放/暂停/进度/倍速自动同步；
-媒体字节由播放器直连 OpenList 拉取，不经过房间服务。
+房主从媒体库（OpenList / B 站 / 直链）添加视频，观众通过邀请链接进房，全房间播放/暂停/进度/倍速自动同步；
+OpenList 媒体字节由播放器直连拉取，Bilibili 流经服务端反代（代发 Referer、透传 Range）。
 
 | 大厅 | 观影房间 |
 | --- | --- |
@@ -11,8 +11,9 @@
 ## 功能
 
 - **同步房间**：房主创建房间、分享邀请链接，游客点开即进房（无需账号）
-- **播放列表**：房主可添加直链视频，或从自己配置的 OpenList 媒体库中选择；点击条目即全房间切换播放
-- **账户与 provider**：登录账户后可配置自己可用的 OpenList 实例（凭据只存服务端内存）
+- **播放列表**：房主可添加直链视频、粘贴 B 站链接（BV 号），或从自己配置的 OpenList 媒体库中选择；点击条目即全房间切换播放
+- **账户与 provider**：登录账户后可配置自己可用的 OpenList / Bilibili provider（凭据只存服务端内存，B 站流由服务端反代）
+- **移动端自适应**：窄屏单列布局、防 iOS 输入聚焦缩放、加大点按目标
 - **精同步**：时钟偏移估计 + 漂移纠偏，播放/暂停/seek/倍速由房主统一控制，观众自动跟随
 - **安全模型**：成员令牌鉴权、媒体注册为不透明 mediaId、短期签名地址授权、邀请码可重置
 
@@ -25,8 +26,7 @@ SyncFrame/
 │   ├── apps/server/          # Node 后端：REST 鉴权 + WebSocket 同步房间 + OpenList 媒体库/媒体授权
 │   ├── packages/sync-protocol/# 同步协议包（时钟偏移、跟随纠偏、消息校验）
 │   ├── packages/openlist-adapter/ # OpenList API 适配器
-│   ├── tests/                # 自动化测试（协议 / 安全 / e2e / UI 冒烟）
-│   └── docs/                 # 实现说明
+│   └── tests/                # 自动化测试（协议仿真 / 安全 / e2e / UI 冒烟 / provider 单测 / 移动端检查）
 ├── deploy/                   # Dockerfile × 2 + nginx 反代配置
 └── docker-compose.yml        # 一键 Docker 部署（web + server）
 ```
@@ -68,6 +68,7 @@ npm run p1:web
 - 改后端代码用 `npx tsx watch --env-file-if-exists=.env apps/server/src/index.ts` 自动重启
 - 类型检查：`npm run typecheck`
 - 前端冒烟测试：`npm run p3:ui`（需本机 Chrome/Edge）
+- provider 单测：`npm run p4:unit`；移动端布局检查：`npm run p4:mobile`（需本机 Chrome/Edge）
 
 ### 方式二：Docker 构建并部署
 

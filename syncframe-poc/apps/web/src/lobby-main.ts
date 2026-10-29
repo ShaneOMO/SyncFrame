@@ -183,10 +183,10 @@ interface UserState {
 
 interface PublicProvider {
   id: string;
-  kind: "openlist";
+  kind: "openlist" | "bilibili";
   label: string;
-  baseUrl: string;
-  username: string;
+  baseUrl?: string;
+  username?: string;
 }
 
 function loadUser(): UserState | null {
@@ -292,7 +292,7 @@ function renderProviders(providers: PublicProvider[]): void {
   if (providers.length === 0) {
     const d = document.createElement("div");
     d.className = "browse-empty";
-    d.textContent = "（尚未配置 provider；可添加 OpenList，或在房间里直接用直链）";
+    d.textContent = "（尚未配置 provider；可添加 OpenList / 哔哩哔哩，或在房间里直接用直链、B 站链接）";
     listEl.appendChild(d);
     return;
   }
@@ -301,12 +301,12 @@ function renderProviders(providers: PublicProvider[]): void {
     row.className = "provider-row";
     const kind = document.createElement("span");
     kind.className = "kind";
-    kind.textContent = "OpenList";
+    kind.textContent = p.kind === "openlist" ? "OpenList" : "哔哩哔哩";
     const label = document.createElement("b");
     label.textContent = p.label;
     const url = document.createElement("span");
     url.className = "url";
-    url.textContent = `${p.baseUrl} · ${p.username}`;
+    url.textContent = p.kind === "openlist" ? `${p.baseUrl} · ${p.username}` : "SESSDATA 凭据仅存服务端";
     const del = document.createElement("button");
     del.className = "danger";
     del.textContent = "删除";
@@ -338,29 +338,46 @@ async function saveProviders(next: PublicProvider[]): Promise<void> {
   }
 }
 
+$("#pKind").addEventListener("change", () => {
+  const kind = ($("#pKind") as HTMLSelectElement).value;
+  ($("#pOpenlistFields") as HTMLElement).hidden = kind !== "openlist";
+  ($("#pBilibiliFields") as HTMLElement).hidden = kind !== "bilibili";
+});
+
 $("#pAdd").addEventListener("click", async () => {
   const msgEl2 = $("#providerMsg");
   msgEl2.textContent = "";
-  const label = ($("#pLabel") as HTMLInputElement).value.trim();
-  const baseUrl = ($("#pBaseUrl") as HTMLInputElement).value.trim();
-  const username = ($("#pUsername") as HTMLInputElement).value.trim();
-  const password = ($("#pPassword") as HTMLInputElement).value;
-  if (!baseUrl || !username || !password) {
-    msgEl2.textContent = "请填写完整的 OpenList 地址、用户名与密码";
-    return;
+  const kind = ($("#pKind") as HTMLSelectElement).value;
+  let next: Record<string, unknown> | null = null;
+  if (kind === "openlist") {
+    const label = ($("#pLabel") as HTMLInputElement).value.trim();
+    const baseUrl = ($("#pBaseUrl") as HTMLInputElement).value.trim();
+    const username = ($("#pUsername") as HTMLInputElement).value.trim();
+    const password = ($("#pPassword") as HTMLInputElement).value;
+    if (!baseUrl || !username || !password) {
+      msgEl2.textContent = "请填写完整的 OpenList 地址、用户名与密码";
+      return;
+    }
+    next = { id: "", kind: "openlist", label: label || "OpenList", baseUrl, username, password };
+  } else {
+    const label = ($("#pBiliLabel") as HTMLInputElement).value.trim();
+    const cookie = ($("#pBiliCookie") as HTMLInputElement).value.trim();
+    next = { id: "", kind: "bilibili", label: label || "哔哩哔哩", cookie };
   }
   // 基于当前渲染的列表 + 新增项；更简单做法是从 /api/me 重拉。
   try {
     const me = await fetch("/api/me", { headers: userHeaders() }).then((r) => r.json()) as { providers: PublicProvider[] };
     await saveProviders([
       ...me.providers,
-      { id: "", kind: "openlist", label: label || "OpenList", baseUrl, username, password },
+      next as unknown as PublicProvider,
     ]);
     if (msgEl2.textContent === "已保存") {
       ($("#pLabel") as HTMLInputElement).value = "";
       ($("#pBaseUrl") as HTMLInputElement).value = "";
       ($("#pUsername") as HTMLInputElement).value = "";
       ($("#pPassword") as HTMLInputElement).value = "";
+      ($("#pBiliLabel") as HTMLInputElement).value = "";
+      ($("#pBiliCookie") as HTMLInputElement).value = "";
     }
   } catch (err) {
     msgEl2.textContent = err instanceof Error ? err.message : String(err);

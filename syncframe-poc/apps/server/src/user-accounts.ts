@@ -22,7 +22,16 @@ export interface OpenListProviderConfig {
   password: string;
 }
 
-export type ProviderConfig = OpenListProviderConfig;
+/** Bilibili provider（参考 SyncTV）：可选 SESSDATA cookie，匿名也可播放（≤1080P）。 */
+export interface BilibiliProviderConfig {
+  id: string;
+  kind: "bilibili";
+  label: string;
+  /** SESSDATA 等 cookie 串（可选；只存服务端内存，不回显）。 */
+  cookie?: string;
+}
+
+export type ProviderConfig = OpenListProviderConfig | BilibiliProviderConfig;
 
 interface UserRecord {
   username: string;
@@ -33,10 +42,10 @@ interface UserRecord {
 
 export interface PublicProvider {
   id: string;
-  kind: "openlist";
+  kind: "openlist" | "bilibili";
   label: string;
-  baseUrl: string;
-  username: string;
+  baseUrl?: string;
+  username?: string;
 }
 
 const USER_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -98,24 +107,38 @@ export class UserAccounts {
     for (const raw of providers) {
       if (typeof raw !== "object" || raw === null) return { ok: false, error: "provider 配置格式错误" };
       const p = raw as Record<string, unknown>;
-      if (p.kind !== "openlist") return { ok: false, error: "仅支持 openlist provider" };
-      const baseUrl = typeof p.baseUrl === "string" ? p.baseUrl.trim() : "";
-      const usernameCfg = typeof p.username === "string" ? p.username.trim() : "";
-      const password = typeof p.password === "string" ? p.password : "";
-      const label = (typeof p.label === "string" ? p.label.trim() : "") || usernameCfg || "OpenList";
-      if (!/^https?:\/\//.test(baseUrl)) return { ok: false, error: "baseUrl 必须是 http(s) 地址" };
-      if (!usernameCfg || !password) return { ok: false, error: "OpenList provider 需要用户名与密码" };
       const id = typeof p.id === "string" && p.id ? p.id : randomBytes(6).toString("base64url");
-      next.set(id, { id, kind: "openlist", label: label.slice(0, 24), baseUrl: baseUrl.replace(/\/+$/, ""), username: usernameCfg, password });
+      if (p.kind === "openlist") {
+        const baseUrl = typeof p.baseUrl === "string" ? p.baseUrl.trim() : "";
+        const usernameCfg = typeof p.username === "string" ? p.username.trim() : "";
+        const password = typeof p.password === "string" ? p.password : "";
+        const label = (typeof p.label === "string" ? p.label.trim() : "") || usernameCfg || "OpenList";
+        if (!/^https?:\/\//.test(baseUrl)) return { ok: false, error: "baseUrl 必须是 http(s) 地址" };
+        if (!usernameCfg || !password) return { ok: false, error: "OpenList provider 需要用户名与密码" };
+        next.set(id, { id, kind: "openlist", label: label.slice(0, 24), baseUrl: baseUrl.replace(/\/+$/, ""), username: usernameCfg, password });
+      } else if (p.kind === "bilibili") {
+        const label = (typeof p.label === "string" ? p.label.trim() : "") || "哔哩哔哩";
+        const cookie = typeof p.cookie === "string" ? p.cookie.trim() : "";
+        next.set(id, { id, kind: "bilibili", label: label.slice(0, 24), ...(cookie ? { cookie } : {}) });
+      } else {
+        return { ok: false, error: "仅支持 openlist / bilibili provider" };
+      }
     }
     user.providers = next;
     return { ok: true };
   }
 
-  /** 对外展示形态（不含密码）。 */
+  /** 对外展示形态（不含密码/cookie 等凭据）。 */
   listProviders(username: string): PublicProvider[] {
     const user = this.users.get(username);
     if (!user) return [];
-    return [...user.providers.values()].map(({ password: _pw, ...pub }) => pub);
+    return [...user.providers.values()].map((p) => {
+      if (p.kind === "openlist") {
+        const { password: _pw, ...pub } = p;
+        return pub;
+      }
+      const { cookie: _ck, ...pub } = p;
+      return pub;
+    });
   }
 }

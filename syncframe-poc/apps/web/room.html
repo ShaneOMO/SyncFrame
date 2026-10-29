@@ -153,6 +153,20 @@
     #inviteRow > label { color: var(--text-dim); font-size: var(--fs-caption); flex: 0 0 auto; }
     #inviteLink { flex: 1; min-width: 220px; font-size: var(--fs-caption); }
     #inviteRow button { padding: 5px 14px; }
+    @media (max-width: 560px) {
+      #inviteRow button { padding: 9px 16px; }
+      body { padding: 0 12px var(--sp-6); }
+      /* 顶栏收紧：隐藏副标题、减小内边距与间距，避免小屏下占满首屏 */
+      header.top { margin: 0 -12px var(--sp-4); padding: 10px 14px; gap: 6px; }
+      header.top .logo span { display: none; }
+      #inviteRow { padding: 10px 12px; }
+      /* 浏览工具栏允许更窄的路径输入，搜索框保持整行换行 */
+      #browsePath { min-width: 0; }
+      #browseSearch { min-width: 0 !important; flex: 1 1 140px; }
+      .stat-box { min-width: 60px; padding: 8px 2px; }
+      .stat-box b { font-size: 16px; }
+      #clockFace { font-size: 40px; padding: 24px 0 var(--sp-2); }
+    }
   </style>
 </head>
 <body>
@@ -255,6 +269,9 @@
         <div id="directFields" style="margin-top:var(--sp-2)">
           <input type="text" id="addName" placeholder="视频名称（可选）" maxlength="128" style="width:100%" />
           <input type="text" id="addUrl" placeholder="直链视频地址（http/https）" style="width:100%;margin-top:6px" />
+        </div>
+        <div id="biliFields" hidden style="margin-top:var(--sp-2)">
+          <input type="text" id="addBiliUrl" placeholder="B 站视频：BV 号 / av 号 / bilibili 链接" style="width:100%" />
         </div>
         <div id="pathFields" hidden style="margin-top:var(--sp-2)">
           <input type="text" id="addPath" placeholder="OpenList 文件路径，如 /movies/a.mkv" style="width:100%" />

@@ -1,7 +1,7 @@
 /**
  * P2 同步房间：WebSocket 房间管理 + 状态定序 + 权威时钟戳。
  *
- * 与 Movi Watch Party 原型的差异（审计结论，见 docs/p2-sync-protocol.md）：
+ * 与 Movi Watch Party 原型的差异（原型审计结论）：
  * - 广播不透明 mediaId，不广播原始 src/URL；
  * - 仅房主可控制（无 grant/promote），房主离开→房间暂停+宽限期等待，不自动转移（S15）；
  * - revision + mediaRevision 定序，乱序/旧片迟到消息在客户端丢弃（S14）；

@@ -12,12 +12,15 @@
  *                                                    → {memberToken, clientId, role}（clientId=房主时恢复 host）
  *  - GET  /api/browse?path=&page=                    列目录（仅房主；观众 403）
  *  - GET  /api/search?keywords=&parent=&page=        搜索（仅房主）
- *  - POST /api/rooms/:id/media  注册媒体（仅房主）。三种形态：
+ *  - POST /api/rooms/:id/media  注册媒体（仅房主）。四种形态：
  *      {path}                                服务端环境变量 OpenList（默认）
  *      {provider:"direct", name, url}        直链（校验 http/https、禁带凭证）
+ *      {provider:"bilibili", url}            B 站视频（BV/av/链接，服务端解析标题与分 P）
  *      {provider:<id>, path} + X-User-Token  房主私有 OpenList provider（凭用户令牌鉴权）
+ *      {provider:"bilibili:<id>", url} + X-User-Token  房主私有 Bilibili provider（SESSDATA cookie）
  *    自动注册同目录外挂字幕（srt/ass/ssa/vtt）
  *  - GET  /api/rooms/:id/media/:mediaId/grant        签发短期媒体访问凭证（房间成员；跨房间 404）
+ *  - GET  /api/rooms/:id/media/:mediaId/stream?token=  Bilibili 流反代（透传 Range，代发 Referer）
  *  - GET  /api/resolve?path=&route=raw|proxy         P1 遗留：直接解析（无房间授权，仅验证用）
  *
  *  - WS   /ws?room=<id>&token=<memberToken>          同步房间（凭成员令牌入场）
@@ -33,6 +36,8 @@ import { RoomManager } from "./sync-rooms.ts";
 import { RoomRegistry, tokenFingerprint } from "./room-auth.ts";
 import type { MemberRecord } from "./room-auth.ts";
 import { UserAccounts } from "./user-accounts.ts";
+import type { ProviderConfig } from "./user-accounts.ts";
+import { BilibiliClient, getPlayUrlCached, parseVideoId } from "./bilibili.ts";
 
 const PORT = Number(process.env.SERVER_PORT ?? 8787);
 const baseUrl = process.env.OPENLIST_BASE_URL;
@@ -57,6 +62,22 @@ const registry = new RoomRegistry({  onAudit: (ev) => {
 // P4：用户账户（PoC 内存存储）+ 房主私有 OpenList provider 的客户端缓存（凭据不出服务端）。
 const accounts = new UserAccounts();
 const userClients = new Map<string, { client: OpenListClient; baseUrl: string }>();
+
+// Bilibili provider：内置匿名客户端 + 用户私有（带 SESSDATA cookie）客户端缓存。
+const anonBilibili = new BilibiliClient();
+const userBilibiliClients = new Map<string, BilibiliClient>();
+
+function bilibiliClientFor(provider: ProviderConfig | undefined): BilibiliClient {
+  if (provider && provider.kind === "bilibili" && provider.cookie) {
+    let cached = userBilibiliClients.get(provider.id);
+    if (!cached) {
+      cached = new BilibiliClient({ cookie: provider.cookie });
+      userBilibiliClients.set(provider.id, cached);
+    }
+    return cached;
+  }
+  return anonBilibili;
+}
 
 async function userOpenListClient(username: string, providerId: string): Promise<{ client: OpenListClient; baseUrl: string } | null> {
   const user = accounts.getUser(username);
@@ -286,6 +307,8 @@ async function handleSetProviders(req: IncomingMessage, res: ServerResponse, bod
   for (const key of [...userClients.keys()]) {
     if (key.startsWith(`${username}:`)) userClients.delete(key);
   }
+  // bilibili cookie 可能被替换：全部重建（PoC 规模下成本可忽略）。
+  userBilibiliClients.clear();
   sendJson(res, 200, { providers: accounts.listProviders(username) });
 }
 
@@ -486,6 +509,50 @@ async function handleRegisterMedia(
     }
     return;
   }
+  // Bilibili provider：粘贴 BV 号 / av 号 / bilibili 链接，服务端解析标题与分 P（参考 SyncTV）。
+  // 内置匿名；也可在 provider 配置里绑定 SESSDATA cookie 的私有 bilibili provider（更高画质）。
+  if (provider === "bilibili" || provider.startsWith("bilibili:")) {
+    const rawUrl = typeof parsed.url === "string" ? parsed.url : (typeof parsed.bvid === "string" ? parsed.bvid : "");
+    const ref = parseVideoId(rawUrl);
+    if (!ref) {
+      sendJson(res, 400, { error: "无法识别 bilibili 视频（支持 BV 号 / av 号 / bilibili 链接）" });
+      return;
+    }
+    // 私有 provider：bilibili:<providerId>，凭 X-User-Token 取该用户的 cookie 配置。
+    let providerCfg: ProviderConfig | undefined;
+    let providerLabel = "哔哩哔哩";
+    let providerOwner: string | undefined;
+    if (provider.startsWith("bilibili:")) {
+      const providerId = provider.slice("bilibili:".length);
+      const username = accounts.authenticate(
+        typeof req.headers["x-user-token"] === "string" ? req.headers["x-user-token"] : null,
+      );
+      providerCfg = username ? accounts.getUser(username)?.providers.get(providerId) : undefined;
+      if (!username || !providerCfg || providerCfg.kind !== "bilibili") {
+        sendJson(res, 403, { error: "provider 不存在或不属于当前登录用户" });
+        return;
+      }
+      providerLabel = providerCfg.label;
+      providerOwner = username;
+    }
+    try {
+      const bc = bilibiliClientFor(providerCfg);
+      const info = await bc.getVideoInfo(ref);
+      const result = registry.registerMedia(roomId, member, "", { name: info.title, size: 0 }, [], {
+        provider: providerLabel,
+        bilibili: { bvid: info.bvid, cid: info.cid, aid: info.aid },
+        ...(providerOwner ? { providerOwner, providerId: providerCfg!.id } : {}),
+      });
+      if ("error" in result) {
+        sendJson(res, 403, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, { mediaId: result.mediaId, name: info.title, size: 0, related: result.related, provider: providerLabel });
+    } catch (err) {
+      sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
   const filePath = typeof parsed.path === "string" ? parsed.path : "";
   if (!filePath) {
     sendJson(res, 400, { error: "缺少 path 参数" });
@@ -568,6 +635,11 @@ async function handleGrant(
   }
   try {
     const grant = await registry.grant(roomId, mediaId, member, (entry) => {
+      // Bilibili：流地址 Referer 敏感，grant 只下发服务端反代地址（/stream 透传 Range）。
+      if (entry.bilibili) {
+        const streamUrl = `/api/rooms/${encodeURIComponent(roomId)}/media/${encodeURIComponent(mediaId)}/stream?token=${encodeURIComponent(member.token)}`;
+        return Promise.resolve({ url: streamUrl, name: entry.name, size: 0 });
+      }
       // 私有 OpenList provider：用注册者（房主）的凭据解析；默认走服务端配置的 OpenList。
       if (entry.providerOwner && entry.providerId) {
         return userOpenListClient(entry.providerOwner, entry.providerId).then((ol) => {
@@ -585,6 +657,84 @@ async function handleGrant(
     sendJson(res, 200, grant);
   } catch (err) {
     sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+// ── Bilibili 流反代：浏览器 <video> 无法带 Referer，由服务端代拉流并透传 Range ──
+
+async function handleStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  roomId: string,
+  mediaId: string,
+  url: URL,
+): Promise<void> {
+  const token = url.searchParams.get("token");
+  const member = registry.authenticate(roomId, token);
+  if (!member) {
+    sendJson(res, 401, { error: "成员令牌无效或已过期" });
+    return;
+  }
+  const entry = registry.resolveMediaPath(roomId, mediaId);
+  if (!entry || !entry.bilibili) {
+    // 跨房间/非 bilibili 条目：404，与 grant 的存在性语义一致。
+    sendJson(res, 404, { error: "媒体不存在或未授权" });
+    return;
+  }
+  if (!rateLimit("grant", clientIp(req))) {
+    sendJson(res, 429, { error: "拉流请求过于频繁，请稍后再试" });
+    return;
+  }
+  try {
+    const bc = bilibiliClientFor(
+      entry.providerOwner && entry.providerId
+        ? accounts.getUser(entry.providerOwner)?.providers.get(entry.providerId)
+        : undefined,
+    );
+    const play = await getPlayUrlCached(bc, entry.bilibili.bvid, entry.bilibili.cid);
+    const range = req.headers.range;
+    const upstream = await fetch(play.url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Referer: "https://www.bilibili.com",
+        ...(range ? { Range: range } : {}),
+      },
+    });
+    res.writeHead(upstream.status, {
+      "Content-Type": upstream.headers.get("content-type") ?? "video/mp4",
+      ...(upstream.headers.get("content-length")
+        ? { "Content-Length": upstream.headers.get("content-length")! }
+        : {}),
+      ...(upstream.headers.get("content-range")
+        ? { "Content-Range": upstream.headers.get("content-range")! }
+        : {}),
+      "Accept-Ranges": "bytes",
+      // 媒体片段允许跨域直放（与 grant 响应的 CORS 语义一致）。
+      "Access-Control-Allow-Origin": "*",
+    });
+    if (!upstream.body || upstream.status === 204) {
+      res.end();
+      return;
+    }
+    // 手动逐段泵送（Node 18 fetch 的 body 是 web ReadableStream）。
+    const reader = upstream.body.getReader();
+    const pump = (): void => {
+      void reader.read().then(({ done, value }) => {
+        if (done) {
+          res.end();
+          return;
+        }
+        res.write(Buffer.from(value));
+        pump();
+      }, (err) => {
+        console.warn(`[stream] bilibili 拉流中断 media=${mediaId}: ${err instanceof Error ? err.message : err}`);
+        res.end();
+      });
+    };
+    pump();
+  } catch (err) {
+    if (!res.headersSent) sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+    else res.end();
   }
 }
 
@@ -673,6 +823,9 @@ const server = createServer(async (req, res) => {
       }
       const parts = url.pathname.split("/"); // ["","api","rooms",:id,"media",:mediaId,"grant"]
       await handleGrant(req, res, parts[3], parts[5]);
+    } else if (url.pathname.startsWith("/api/rooms/") && req.method === "GET" && url.pathname.endsWith("/stream")) {
+      const parts = url.pathname.split("/"); // ["","api","rooms",:id,"media",:mediaId,"stream"]
+      await handleStream(req, res, parts[3], parts[5], url);
     } else if (url.pathname === "/api/resolve" && req.method === "GET") {
       await handleResolve(req, res, url);
     } else {
@@ -729,5 +882,6 @@ server.listen(PORT, () => {
   console.log(`  GET  /api/rooms | POST /api/rooms | /api/rooms/:id/join   （房间列表 + 房间鉴权）`);
   console.log(`  GET  /api/browse?room=&path= | /api/search?room=&keywords=   （房主媒体库）`);
   console.log(`  POST /api/rooms/:id/media | GET .../media/:mediaId/grant   （受控映射 + 短期凭证）`);
+  console.log(`  GET  .../media/:mediaId/stream?token=   （Bilibili 流反代，Range 透传）`);
   console.log(`  WS   /ws?room=<id>&token=<memberToken>   （凭成员令牌入场）`);
 });

@@ -203,15 +203,25 @@
         <p class="provider-who">当前用户：<b id="providerUser"></b> <span>（凭据仅存服务端内存）</span></p>
         <h3><svg class="ic"><use href="#i-video"/></svg>我的视频 provider</h3>
         <div id="providerList"></div>
-        <h3>添加 OpenList provider</h3>
+        <h3>添加 provider</h3>
         <div class="provider-form">
-          <input id="pLabel" type="text" maxlength="24" placeholder="名称（如：家里 OpenList）" />
-          <input id="pBaseUrl" type="text" placeholder="https://openlist.example.com" />
-          <input id="pUsername" type="text" maxlength="64" placeholder="OpenList 用户名" autocomplete="off" />
-          <input id="pPassword" type="password" maxlength="64" placeholder="OpenList 密码" autocomplete="new-password" />
+          <select id="pKind" style="width:100%">
+            <option value="openlist">OpenList（自建网盘）</option>
+            <option value="bilibili">哔哩哔哩（可选 SESSDATA，画质更高）</option>
+          </select>
+          <div id="pOpenlistFields">
+            <input id="pLabel" type="text" maxlength="24" placeholder="名称（如：家里 OpenList）" />
+            <input id="pBaseUrl" type="text" placeholder="https://openlist.example.com" />
+            <input id="pUsername" type="text" maxlength="64" placeholder="OpenList 用户名" autocomplete="off" />
+            <input id="pPassword" type="password" maxlength="64" placeholder="OpenList 密码" autocomplete="new-password" />
+          </div>
+          <div id="pBilibiliFields" hidden>
+            <input id="pBiliLabel" type="text" maxlength="24" placeholder="名称（如：我的 B 站）" />
+            <input id="pBiliCookie" type="text" placeholder="SESSDATA cookie（可选，留空则匿名）" autocomplete="off" />
+          </div>
           <button id="pAdd">添加 provider</button>
         </div>
-        <p class="provider-hint">「直链」provider 无需配置：进房间后可直接粘贴视频地址添加。</p>
+        <p class="provider-hint">「直链」「B 站视频」也可免配置直接使用：进房间后直接粘贴视频地址 / BV 号添加。</p>
         <button id="logoutBtn" class="danger">退出登录</button>
         <p id="providerMsg" role="status" aria-live="polite"></p>
       </div>

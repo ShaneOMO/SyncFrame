@@ -1,7 +1,7 @@
 /**
  * P2 同步协议：消息与状态类型。
  *
- * 设计要点（对照 docs/feasibility-validation-plan.md §4.5/§4.6 与 Movi Watch Party 审计）：
+ * 设计要点（对照 Movi Watch Party 原型审计）：
  * - WebSocket 只传播放状态，永不传媒体字节，也不传原始 URL——广播的是不透明 mediaId。
  * - 所有状态由服务端定序：revision 单调递增；mediaRevision 在切换视频时递增，
  *   用于丢弃「切换前的旧消息延迟到达」（S14）。

@@ -48,6 +48,8 @@ export interface MediaEntry {
   /** 房主私有 OpenList provider 的所有者（用户名）+ providerId；grant 时用该用户的凭据解析。 */
   providerOwner?: string;
   providerId?: string;
+  /** Bilibili provider：BV 号 + 分 P cid + aid（仅服务端持有）。 */
+  bilibili?: { bvid: string; cid: number; aid: number };
 }
 
 export interface RelatedEntry {
@@ -257,7 +259,13 @@ export class RoomRegistry {
     path: string,
     meta: { name: string; size: number },
     related: { name: string; size: number }[] = [],
-    ext: { provider?: string; directUrl?: string; providerOwner?: string; providerId?: string } = {},
+    ext: {
+      provider?: string;
+      directUrl?: string;
+      providerOwner?: string;
+      providerId?: string;
+      bilibili?: { bvid: string; cid: number; aid: number };
+    } = {},
   ): { mediaId: string; related: RelatedEntry[] } | { error: string } {
     const room = this.rooms.get(roomId);
     if (!room) return { error: "房间不存在" };
@@ -269,12 +277,21 @@ export class RoomRegistry {
       if (u.protocol !== "http:" && u.protocol !== "https:" || u.username || u.password) {
         return { error: "非法直链地址" };
       }
+    } else if (ext.bilibili !== undefined) {
+      if (!/^BV1[a-zA-Z0-9]{9}$/.test(ext.bilibili.bvid) || !Number.isInteger(ext.bilibili.cid) || ext.bilibili.cid <= 0) {
+        return { error: "非法 bilibili 视频标识" };
+      }
     } else if (!path.startsWith("/") || path.split("/").includes("..")) {
       return { error: "非法路径" };
     }
-    // 同一文件/同一地址重复注册：复用既有 mediaId（幂等，防重复添加）。
+    // 同一文件/同一地址/同一视频重复注册：复用既有 mediaId（幂等，防重复添加）。
     for (const entry of room.media.values()) {
-      if (ext.directUrl !== undefined ? entry.directUrl === ext.directUrl : entry.path === path) {
+      const same = ext.directUrl !== undefined
+        ? entry.directUrl === ext.directUrl
+        : ext.bilibili !== undefined
+          ? entry.bilibili?.bvid === ext.bilibili.bvid && entry.bilibili?.cid === ext.bilibili.cid
+          : entry.path === path;
+      if (same) {
         return { mediaId: entry.mediaId, related: this.relatedEntries(room, entry.mediaId) };
       }
     }
@@ -289,6 +306,7 @@ export class RoomRegistry {
       provider: ext.provider ?? "OpenList",
       ...(ext.directUrl !== undefined ? { directUrl: ext.directUrl } : {}),
       ...(ext.providerOwner ? { providerOwner: ext.providerOwner, providerId: ext.providerId } : {}),
+      ...(ext.bilibili ? { bilibili: ext.bilibili } : {}),
     });
     this.audit({ roomId, action: "media:register", clientId: member.clientId, mediaId });
     // 外挂字幕与视频同目录（fs/get related），自动注册并走同一 grant 路径（P3 任务 8）。

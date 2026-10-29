@@ -57,10 +57,10 @@ const localUser = loadUser();
 
 interface PublicProvider {
   id: string;
-  kind: "openlist";
+  kind: "openlist" | "bilibili";
   label: string;
-  baseUrl: string;
-  username: string;
+  baseUrl?: string;
+  username?: string;
 }
 
 async function fetchMyProviders(): Promise<PublicProvider[]> {
@@ -520,6 +520,7 @@ if (mode === "player" && role === "host") {
   addCard.hidden = false;
   const providerSel = $("#addProvider") as HTMLSelectElement;
   const directFields = $("#directFields") as HTMLElement;
+  const biliFields = $("#biliFields") as HTMLElement;
   const pathFields = $("#pathFields") as HTMLElement;
 
   void (async () => {
@@ -529,10 +530,17 @@ if (mode === "player" && role === "host") {
     optDirect.value = "direct";
     optDirect.textContent = "直链（手动粘贴视频地址）";
     providerSel.appendChild(optDirect);
+    const optBili = document.createElement("option");
+    optBili.value = "bilibili";
+    optBili.textContent = "B 站视频（BV 号 / 链接，免配置）";
+    providerSel.appendChild(optBili);
     for (const p of providers) {
       const o = document.createElement("option");
-      o.value = `p:${p.id}`;
-      o.textContent = `${p.label}（${p.baseUrl}）`;
+      // 用户私有 provider：openlist 用 p:<id>（填路径），bilibili 用 bilibili:<id>（填 BV/链接）。
+      o.value = p.kind === "bilibili" ? `bilibili:${p.id}` : `p:${p.id}`;
+      o.textContent = p.kind === "bilibili"
+        ? `${p.label}（哔哩哔哩，已配置凭据）`
+        : `${p.label}（${p.baseUrl}）`;
       providerSel.appendChild(o);
     }
     if (!localUser) {
@@ -544,10 +552,19 @@ if (mode === "player" && role === "host") {
     }
   })();
 
+  /** 当前 provider 形态：direct=直链 / bili=BV 或链接 / path=OpenList 路径。 */
+  function currentFieldKind(): "direct" | "bili" | "path" {
+    const v = providerSel.value;
+    if (v === "direct") return "direct";
+    if (v === "bilibili" || v.startsWith("bilibili:")) return "bili";
+    return "path";
+  }
+
   providerSel.addEventListener("change", () => {
-    const isDirect = providerSel.value === "direct";
-    directFields.hidden = !isDirect;
-    pathFields.hidden = isDirect;
+    const kind = currentFieldKind();
+    directFields.hidden = kind !== "direct";
+    biliFields.hidden = kind !== "bili";
+    pathFields.hidden = kind !== "path";
   });
 
   $("#addBtn").addEventListener("click", () => {
@@ -562,6 +579,13 @@ if (mode === "player" && role === "host") {
           return;
         }
         payload = { provider: "direct", name, url };
+      } else if (value === "bilibili" || value.startsWith("bilibili:")) {
+        const url = ($("#addBiliUrl") as HTMLInputElement).value.trim();
+        if (!url) {
+          setStatus("请填写 BV 号 / av 号 / bilibili 链接", true);
+          return;
+        }
+        payload = { provider: value, url };
       } else {
         const path = ($("#addPath") as HTMLInputElement).value.trim();
         if (!path) {
@@ -594,6 +618,7 @@ if (mode === "player" && role === "host") {
         setStatus(`已添加: ${body.name}（${body.mediaId}）`);
         ($("#addUrl") as HTMLInputElement).value = "";
         ($("#addPath") as HTMLInputElement).value = "";
+        ($("#addBiliUrl") as HTMLInputElement).value = "";
         await refreshMediaList();
         // 添加后不自动切换，房主点击播放列表条目开播。
       } catch (err) {

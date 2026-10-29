@@ -202,3 +202,13 @@ input[type="range"]:disabled { accent-color: var(--border-strong); }
 .sf-table td { padding: 8px 12px; border-bottom: 0.5px solid var(--border); }
 .sf-table tbody tr { transition: background var(--dur) var(--ease); }
 .sf-table tbody tr:hover { background: var(--panel-2); }
+
+/* ── 移动端适配（窄屏） ──
+   · iOS Safari 在 input font-size < 16px 时聚焦会自动放大页面 → 控件提到 16px
+   · 点按目标最小高度 40px（接近 HIG 44px，兼顾密排桌面风格）
+   · 卡片内边距收紧，给小屏更多内容宽度 */
+@media (max-width: 560px) {
+  input, select, textarea { font-size: 16px; }
+  button { min-height: 40px; }
+  .card, .panel { padding: var(--sp-4) var(--sp-4); }
+}
