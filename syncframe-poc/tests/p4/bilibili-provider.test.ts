@@ -100,7 +100,7 @@ test("getPlayUrl 上报 bilibili 业务错误", async () => {
 test("setProviders 接受 bilibili（cookie 可选，不回显）", () => {
   const accounts = new UserAccounts();
   assert.equal(accounts.initAdmin("admin", "adminpw123"), true);
-  assert.equal(accounts.createUser("admin", "alice", "pw1234").ok, true);
+  assert.equal(accounts.createUser("admin", "alice", "pw123456").ok, true);
   const res = accounts.setProviders("alice", [
     { kind: "bilibili", label: "我的 B 站", cookie: "SESSDATA=xyz" },
     { kind: "bilibili" }, // 匿名
@@ -117,7 +117,7 @@ test("setProviders 接受 bilibili（cookie 可选，不回显）", () => {
 test("setProviders 仍拒绝未知 kind", () => {
   const accounts = new UserAccounts();
   accounts.initAdmin("admin", "adminpw123");
-  accounts.createUser("admin", "bob", "pw1234");
+  accounts.createUser("admin", "bob", "pw123456");
   const res = accounts.setProviders("bob", [{ kind: "emby", label: "x" }]);
   assert.equal(res.ok, false);
 });

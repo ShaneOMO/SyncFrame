@@ -194,8 +194,10 @@ export class Room {
     this.ensureTimer();
 
     ws.on("message", (raw) => this.onMessage(member, raw.toString()));
-    ws.on("close", () => this.drop(member.id));
-    ws.on("error", () => this.drop(member.id));
+    // M4：close/error 回调带上 socket 实例——同一 clientId 重连时，旧 socket 的迟到
+    // close 事件不得删掉刚建立的新连接（身份校验在 drop 里做）。
+    ws.on("close", () => this.drop(member.id, ws));
+    ws.on("error", () => this.drop(member.id, ws));
 
     // 新成员（含迟到加入 S05、断线重连 S06）拿当前权威状态，由客户端自行对齐。
     this.mgr.deliver(ws, {
@@ -348,9 +350,11 @@ export class Room {
     return state;
   }
 
-  private drop(memberId: string): void {
+  private drop(memberId: string, ws?: WebSocket): void {
     const member = this.members.get(memberId);
     if (!member) return;
+    // M4：迟到事件防护——该成员已被同一 clientId 的新连接替换时忽略。
+    if (ws && member.ws !== ws) return;
     this.members.delete(memberId);
     this.mgr.debug(`room=${this.id} member=${memberId}(${member.name}) 离开 role=${member.role}`);
 
@@ -359,11 +363,15 @@ export class Room {
       this.hostId = null;
       this.hostAwaySince = this.mgr.stamp();
       if (this.state && !this.state.paused) {
+        // 按已过时间推算当前位置：state 里的 positionMs 是上一次 publish 的快照，
+        // 直接用会让观众被 seek 回退。
+        const extrapolated =
+          this.state.positionMs + (this.mgr.stamp() - this.state.serverTimeMs) * this.state.rate;
         this.publish({
           mediaId: this.state.mediaId,
           mediaMeta: this.state.mediaMeta,
           paused: true,
-          positionMs: this.state.positionMs,
+          positionMs: extrapolated,
           rate: this.state.rate,
           actorId: memberId,
           action: "pause",

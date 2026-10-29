@@ -116,7 +116,7 @@ async function main(): Promise<void> {
     );
     check("房主 WS 已连接", true);
     const invite = await host.evaluate(() => sessionStorage.getItem(`syncframe-invite-${new URL(location.href).searchParams.get("room")}`) ?? "");
-    check("邀请码已存会话（6 位）", /^[A-Z2-9]{6}$/.test(invite), invite);
+    check("邀请码已存会话（8 位）", /^[A-Z2-9]{8}$/.test(invite), invite);
     check("选片入口（添加影片）对房主可见", await host.locator("#addMediaBtn").isVisible());
     await host.click("#addMediaBtn");
     check("OpenList 媒体库页签可见", await host.locator("#tabOpenlist").isVisible());

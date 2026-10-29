@@ -71,7 +71,7 @@ function hashPassword(password: string, salt: string): string {
 
 function validateCredentials(username: string, password: string): string | null {
   if (!/^[A-Za-z0-9_-]{2,24}$/.test(username)) return "用户名需为 2-24 位字母数字/下划线/横线";
-  if (password.length < 4) return "密码至少 4 位";
+  if (password.length < 8) return "密码至少 8 位";
   return null;
 }
 
@@ -209,7 +209,7 @@ export class UserAccounts {
     if (!this.isAdmin(byAdmin)) return { ok: false, error: "只有管理员可以管理账户" };
     const user = this.users.get(username.trim());
     if (!user) return { ok: false, error: "用户不存在" };
-    if (password.length < 4) return { ok: false, error: "密码至少 4 位" };
+    if (password.length < 8) return { ok: false, error: "密码至少 8 位" };
     user.salt = randomBytes(16).toString("hex");
     user.hash = hashPassword(password, user.salt);
     // 旧令牌全部作废，需重新登录。

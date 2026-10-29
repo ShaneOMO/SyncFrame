@@ -21,7 +21,7 @@ test("账户持久化：管理员/用户/provider 凭据重启后保留，令牌
   try {
     const a = new UserAccounts(dir);
     assert.equal(a.initAdmin("admin", "adminpw123"), true);
-    assert.equal(a.createUser("admin", "alice", "pw1234").ok, true);
+    assert.equal(a.createUser("admin", "alice", "pw123456").ok, true);
     assert.equal(
       a.setProviders("alice", [
         { kind: "openlist", label: "家里", baseUrl: "http://nas.local:5244", username: "u", password: "p" },
@@ -29,13 +29,13 @@ test("账户持久化：管理员/用户/provider 凭据重启后保留，令牌
       ]).ok,
       true,
     );
-    const token = a.login("alice", "pw1234");
+    const token = a.login("alice", "pw123456");
     assert.ok(token);
 
     // 模拟重启：新实例读同一目录
     const b = new UserAccounts(dir);
     assert.equal(b.isAdmin("admin"), true);
-    const relogin = b.login("alice", "pw1234");
+    const relogin = b.login("alice", "pw123456");
     assert.ok(relogin, "用户哈希应可验证（密码正确）");
     assert.notEqual(relogin, token, "重新登录签发新令牌即可，不做断言外要求");
     // 旧令牌不应跨重启有效（令牌纯内存）

@@ -28,7 +28,7 @@ export const MEMBER_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const GRANT_CACHE_MS = 60_000;
 /** 客户端拿到的 expiresInSec 提示：到期前应重新 grant（刷新签名）。 */
 export const GRANT_TTL_SEC = 600;
-/** 房间邀请码：6 位大写字母数字（去掉易混淆字符）。 */
+/** 房间邀请码：8 位大写字母数字（去掉易混淆字符）。M2：6→8 位，配合限流使爆破可忽略。 */
 const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 /** 外挂字幕扩展名：与视频一同自动注册，走同一 grant 授权路径（P3 任务 8）。 */
 const SUBTITLE_EXTS = new Set([".srt", ".ass", ".ssa", ".vtt"]);
@@ -117,9 +117,9 @@ export interface RoomRegistryOptions {
 }
 
 function makeInviteCode(): string {
-  const bytes = randomBytes(6);
+  const bytes = randomBytes(8);
   let code = "";
-  for (let i = 0; i < 6; i++) code += INVITE_ALPHABET[bytes[i] % INVITE_ALPHABET.length];
+  for (let i = 0; i < 8; i++) code += INVITE_ALPHABET[bytes[i] % INVITE_ALPHABET.length];
   return code;
 }
 
@@ -429,6 +429,17 @@ export class RoomRegistry {
     const room = this.rooms.get(roomId);
     if (!room) return null;
     return room.media.get(mediaId) ?? null;
+  }
+
+  /** 房间是否仍有该 clientId 的成员（M3：/stream 票据校验成员未被撤销）。 */
+  hasMemberClient(roomId: string, clientId: string): boolean {
+    const room = this.rooms.get(roomId);
+    if (!room) return false;
+    const now = this.now();
+    for (const m of room.members.values()) {
+      if (m.clientId === clientId && m.expiresAt > now) return true;
+    }
+    return false;
   }
 
   /** 房间是否由该账户创建（provider 媒体操作的归属校验）。 */

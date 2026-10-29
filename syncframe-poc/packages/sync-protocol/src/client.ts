@@ -48,6 +48,8 @@ const defaultTimers: TimerShim = {
 export interface SyncClientOptions {
   /** ws:// 或 wss:// 完整地址（含 room/name/role/clientId 查询参数）。 */
   wsUrl: string;
+  /** M3：WebSocket 子协议列表（令牌经 sf.token.<memberToken> 子协议传递，不进 URL）。 */
+  wsProtocols?: string[];
   role: Role;
   media: MediaAdapter;
   hardDriftMs?: number;
@@ -139,8 +141,9 @@ export class SyncClient {
   connect(): void {
     const Impl = (this.opts.WebSocketImpl ?? globalThis.WebSocket) as new (
       url: string,
+      protocols?: string | string[],
     ) => WSLike;
-    const sock = new Impl(this.opts.wsUrl);
+    const sock = new Impl(this.opts.wsUrl, this.opts.wsProtocols);
     this.ws = sock;
 
     sock.addEventListener("open", () => {

@@ -126,7 +126,7 @@ test("权限模型：游客只能加入房间（创建 401 / provider 401 / 管�
   const guestAdmin = await getJson(BASE, "/api/admin/users");
   assert.equal(guestAdmin.status, 401);
   // 注册接口已关闭（路由不存在）
-  const register = await postJson(BASE, "/api/auth/register", { username: "evil", password: "pw1234" });
+  const register = await postJson(BASE, "/api/auth/register", { username: "evil", password: "pw123456" });
   assert.equal(register.status, 404);
 });
 
@@ -143,11 +143,11 @@ test("账户管理：非管理员 403；管理员可创建/删除/重置密码",
   assert.ok(users.some((u) => u.username === HOST_USER));
 
   // 创建 + 重置密码 + 删除
-  const createdUser = await postJson(BASE, "/api/admin/users", { username: "tempuser", password: "pw1234" }, adminToken);
+  const createdUser = await postJson(BASE, "/api/admin/users", { username: "tempuser", password: "pw123456" }, adminToken);
   assert.equal(createdUser.status, 200);
-  const reset = await postJson(BASE, "/api/admin/users/tempuser/password", { password: "newpw5678" }, adminToken);
+  const reset = await postJson(BASE, "/api/admin/users/tempuser/password", { password: "newpw5678x" }, adminToken);
   assert.equal(reset.status, 200);
-  const relogin = await loginUser(BASE, "tempuser", "newpw5678");
+  const relogin = await loginUser(BASE, "tempuser", "newpw5678x");
   assert.ok(relogin.length > 20);
   // 非管理员删除 → 403；管理员删除 → 200；删除后令牌立即失效
   const delForbidden = await fetch(`${BASE}/api/admin/users/tempuser`, {
@@ -172,7 +172,7 @@ test("账户管理：非管理员 403；管理员可创建/删除/重置密码",
 
 test("创建房间：返回房间号 + 邀请码 + 房主成员令牌", () => {
   assert.match(created.roomId, /^[a-z0-9]{6}$/);
-  assert.match(created.inviteCode, /^[A-Z2-9]{6}$/);
+  assert.match(created.inviteCode, /^[A-Z2-9]{8}$/);
   assert.equal(created.role, "host");
   assert.ok(created.memberToken.length > 20);
   assert.ok(created.hostSecret.length > 20);
@@ -451,7 +451,7 @@ test("邀请码轮换：旧码立即失效，新码可加入；观众无权重�
   const res = await postJson(BASE, `/api/rooms/${created.roomId}/invite/rotate`, {}, hostToken);
   assert.equal(res.status, 200);
   const newCode = String(res.data.inviteCode ?? "");
-  assert.match(newCode, /^[A-Z2-9]{6}$/);
+  assert.match(newCode, /^[A-Z2-9]{8}$/);
   assert.notEqual(newCode, created.inviteCode);
   const withOld = await joinRoom(BASE, created.roomId, "旧码观众", created.inviteCode);
   assert.equal(withOld.status, 401, "旧邀请码必须失效");

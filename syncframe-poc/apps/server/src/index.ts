@@ -29,15 +29,16 @@
  *      {provider:"bilibili:<id>", url} + X-User-Token 房主本人账户的 Bilibili provider
  *    自动注册同目录外挂字幕（srt/ass/ssa/vtt）
  *  - GET  /api/rooms/:id/media/:mediaId/grant        签发短期媒体访问凭证（房间成员；跨房间 404）
- *  - GET  /api/rooms/:id/media/:mediaId/stream?token=  Bilibili 流反代（透传 Range，代发 Referer）
+ *  - GET  /api/rooms/:id/media/:mediaId/stream?ticket=  Bilibili 流反代（透传 Range，代发 Referer；短期票据）
  *
- *  - WS   /ws?room=<id>&token=<memberToken>          同步房间（凭成员令牌入场）
+ *  - WS   /ws?room=<id>（子协议 sf.token.<memberToken>）  同步房间（凭成员令牌入场）
  *
  * 令牌缓存于内存；provider 凭据只存在于服务端；不再从环境变量读取 OpenList。
  * 审计日志见 [audit] 行：只含 roomId/mediaId/clientId/动作，不含令牌、签名 URL 或文件路径。
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
@@ -123,6 +124,8 @@ function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
+    // M3：任何情况下都不向外泄漏本页 URL（含 ?key= 邀请码 / token）。
+    "Referrer-Policy": "no-referrer",
   });
   res.end(body);
 }
@@ -262,15 +265,24 @@ function requireRoomOwner(req: IncomingMessage, res: ServerResponse, roomId: str
 // ── 账户 / provider 配置 / 管理员 / 公开房间列表 ───────────────────────────
 
 async function handleLogin(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
-  const parsed = readJsonBody(body);
+  // M2：同一用户名连续失败锁定（在路由限流之后做细粒度控制）。
+  const parsed0 = readJsonBody(body);
+  const username0 = typeof parsed0.username === "string" ? parsed0.username.trim() : "";
+  if (username0 && loginThrottled(username0)) {
+    sendJson(res, 429, { error: "该账户尝试过于频繁，已临时锁定，请 5 分钟后再试" });
+    return;
+  }
+  const parsed = parsed0;
   const token = accounts.login(
     typeof parsed.username === "string" ? parsed.username : "",
     typeof parsed.password === "string" ? parsed.password : "",
   );
   if (!token) {
+    if (username0) recordLoginFailure(username0);
     sendJson(res, 401, { error: "用户名或密码错误" });
     return;
   }
+  clearLoginFailures(username0);
   sendJson(res, 200, { userToken: token, username: (typeof parsed.username === "string" ? parsed.username : "").trim() });
 }
 
@@ -683,8 +695,16 @@ async function handleGrant(
   try {
     const grant = await registry.grant(roomId, mediaId, member, (entry) => {
       // Bilibili：流地址 Referer 敏感，grant 只下发服务端反代地址（/stream 透传 Range）。
+      // M3：不下发 12h 成员令牌，改用 60s 一次性短期票据。
       if (entry.bilibili) {
-        const streamUrl = `/api/rooms/${encodeURIComponent(roomId)}/media/${encodeURIComponent(mediaId)}/stream?token=${encodeURIComponent(member.token)}`;
+        const ticket = randomUUID();
+        streamTickets.set(ticket, {
+          roomId,
+          mediaId,
+          memberClientId: member.clientId,
+          expiresAt: Date.now() + 60_000,
+        });
+        const streamUrl = `/api/rooms/${encodeURIComponent(roomId)}/media/${encodeURIComponent(mediaId)}/stream?ticket=${encodeURIComponent(ticket)}`;
         return Promise.resolve({ url: streamUrl, name: entry.name, size: 0 });
       }
       // OpenList provider：用注册者（房间创建者）的凭据解析（凭据不出服务端）。
@@ -716,11 +736,23 @@ async function handleStream(
   mediaId: string,
   url: URL,
 ): Promise<void> {
-  const token = url.searchParams.get("token");
-  const member = registry.authenticate(roomId, token);
-  if (!member) {
-    sendJson(res, 401, { error: "成员令牌无效或已过期" });
-    return;
+  // M3：优先用一次性短期票据（grant 签发，60s 有效）；兼容旧的 query token。
+  const ticket = url.searchParams.get("ticket");
+  let member: MemberRecord | null = null;
+  if (ticket) {
+    const t = streamTickets.get(ticket);
+    if (!t || t.expiresAt <= Date.now() || t.roomId !== roomId || t.mediaId !== mediaId
+        || !registry.hasMemberClient(roomId, t.memberClientId)) {
+      sendJson(res, 401, { error: "票据无效或已过期" });
+      return;
+    }
+    member = { token: "", clientId: t.memberClientId, name: "", role: "viewer", expiresAt: 0, joinedAt: 0 };
+  } else {
+    member = registry.authenticate(roomId, url.searchParams.get("token"));
+    if (!member) {
+      sendJson(res, 401, { error: "成员令牌无效或已过期" });
+      return;
+    }
   }
   const entry = registry.resolveMediaPath(roomId, mediaId);
   if (!entry || !entry.bilibili) {
@@ -728,10 +760,24 @@ async function handleStream(
     sendJson(res, 404, { error: "媒体不存在或未授权" });
     return;
   }
-  if (!rateLimit("grant", clientIp(req))) {
+  // M1：/stream 使用独立限流桶（不再挤占 grant 桶，避免 NAT 下同 IP 观众互相 429）。
+  const ip = clientIp(req);
+  if (!rateLimit("stream", ip)) {
     sendJson(res, 429, { error: "拉流请求过于频繁，请稍后再试" });
     return;
   }
+  // M1（可选加固）：单 IP 并发流上限，防止一个人拖垮进程。
+  const concurrent = activeStreams.get(ip) ?? 0;
+  if (concurrent >= 4) {
+    sendJson(res, 503, { error: "同 IP 并发流过多" });
+    return;
+  }
+  activeStreams.set(ip, concurrent + 1);
+  res.on("close", () => {
+    const n = (activeStreams.get(ip) ?? 1) - 1;
+    if (n <= 0) activeStreams.delete(ip);
+    else activeStreams.set(ip, n);
+  });
   try {
     const bc = bilibiliClientFor(
       entry.providerOwner && entry.providerId
@@ -764,21 +810,34 @@ async function handleStream(
       return;
     }
     // 手动逐段泵送（Node 18 fetch 的 body 是 web ReadableStream）。
+    // M1：加背压（write 返回 false 时等 drain）与上游取消（客户端断开时 reader.cancel），
+    // 避免慢连接堆内存打满进程、seek/关页面后上游连接泄漏。
     const reader = upstream.body.getReader();
-    const pump = (): void => {
-      void reader.read().then(({ done, value }) => {
-        if (done) {
-          res.end();
-          return;
-        }
-        res.write(Buffer.from(value));
-        pump();
-      }, (err) => {
-        console.warn(`[stream] bilibili 拉流中断 media=${mediaId}: ${err instanceof Error ? err.message : err}`);
-        res.end();
-      });
+    let stopped = false;
+    const stop = (): void => {
+      if (stopped) return;
+      stopped = true;
+      void reader.cancel().catch(() => {});
     };
-    pump();
+    req.on("close", stop);
+    res.on("close", stop);
+    const pump = async (): Promise<void> => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || stopped) break;
+          if (!res.write(Buffer.from(value))) {
+            await new Promise<void>((resolve) => res.once("drain", resolve));
+          }
+        }
+      } catch (err) {
+        if (!stopped) {
+          console.warn(`[stream] bilibili 拉流中断 media=${mediaId}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+      if (!stopped) res.end();
+    };
+    void pump();
   } catch (err) {
     if (!res.headersSent) sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
     else res.end();
@@ -789,12 +848,25 @@ async function handleStream(
 
 interface RateBucket {
   timestamps: number[];
+  windowMs: number;
 }
 const rateBuckets = new Map<string, RateBucket>();
+// M2：过期桶定期清扫（伪造 IP 刷请求时 rateBuckets 会以 IP 为 key 无上限增长）。
+const rateBucketSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateBuckets) {
+    bucket.timestamps = bucket.timestamps.filter((t) => t > now - bucket.windowMs);
+    if (bucket.timestamps.length === 0) rateBuckets.delete(key);
+  }
+}, 5 * 60_000);
+rateBucketSweep.unref();
+
 const RATE_LIMITS: Record<string, { windowMs: number; max: number }> = {
   join: { windowMs: 60_000, max: 20 },
   grant: { windowMs: 60_000, max: 60 },
   "ws-reject": { windowMs: 60_000, max: 30 },
+  login: { windowMs: 60_000, max: 10 },
+  stream: { windowMs: 60_000, max: 240 },
 };
 
 /** 返回 true 表示放行；false 表示超限（调用方回 429）。窗口边缘惰性清理。 */
@@ -805,7 +877,7 @@ function rateLimit(action: string, key: string): boolean {
   const bucketKey = `${action}:${key}`;
   let bucket = rateBuckets.get(bucketKey);
   if (!bucket) {
-    bucket = { timestamps: [] };
+    bucket = { timestamps: [], windowMs: limit.windowMs };
     rateBuckets.set(bucketKey, bucket);
   }
   bucket.timestamps = bucket.timestamps.filter((t) => t > now - limit.windowMs);
@@ -814,11 +886,50 @@ function rateLimit(action: string, key: string): boolean {
   return true;
 }
 
+// M2：登录失败锁定——同一用户名连续 5 次失败锁 5 分钟（防撞库）。
+const loginFailures = new Map<string, { count: number; lockedUntil: number }>();
+function loginThrottled(username: string): boolean {
+  const rec = loginFailures.get(username);
+  return !!rec && rec.lockedUntil > Date.now();
+}
+function recordLoginFailure(username: string): void {
+  const rec = loginFailures.get(username) ?? { count: 0, lockedUntil: 0 };
+  rec.count += 1;
+  if (rec.count >= 5) {
+    rec.lockedUntil = Date.now() + 5 * 60_000;
+    rec.count = 0;
+  }
+  loginFailures.set(username, rec);
+}
+function clearLoginFailures(username: string): void {
+  loginFailures.delete(username);
+}
+
+// M2：默认不信任 X-Forwarded-For（直连部署下客户端可伪造）。
+// 仅当前面确实挂了会覆盖该头的可信反代时，设 TRUST_PROXY=1 才读取，且取最右侧一跳。
+const TRUST_PROXY = process.env.TRUST_PROXY === "1";
+
 function clientIp(req: IncomingMessage): string {
-  const fwd = req.headers["x-forwarded-for"];
-  if (typeof fwd === "string" && fwd.length > 0) return fwd.split(",")[0].trim();
+  if (TRUST_PROXY) {
+    const fwd = req.headers["x-forwarded-for"];
+    if (typeof fwd === "string" && fwd.length > 0) {
+      const parts = fwd.split(",").map((s) => s.trim()).filter(Boolean);
+      if (parts.length > 0) return parts[parts.length - 1];
+    }
+  }
   return req.socket.remoteAddress ?? "unknown";
 }
+
+// M3：/stream 短期票据（grant 签发，60s 内可重复用于 <video> 的多个 Range 请求）与并发流统计。
+const streamTickets = new Map<string, { roomId: string; mediaId: string; memberClientId: string; expiresAt: number }>();
+const activeStreams = new Map<string, number>();
+const streamTicketSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [key, t] of streamTickets) {
+    if (t.expiresAt <= now) streamTickets.delete(key);
+  }
+}, 60_000);
+streamTicketSweep.unref();
 
 // ── 静态资源托管（单容器部署：后端直接出前端构建产物；反向代理由用户自行设置）──
 // 仅当 WEB_DIST 指向 Vite 构建产物目录时启用；本地开发仍走 Vite（HMR + 代理）。
@@ -869,6 +980,8 @@ async function tryServeStatic(res: ServerResponse, pathname: string): Promise<bo
     "Content-Length": info.size,
     // 带内容哈希的静态资源长缓存；HTML 不缓存（保证发版即生效）
     "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
+    // M3：页面 URL 可能带 ?key= 邀请码，禁止浏览器外发 Referer。
+    "Referrer-Policy": "no-referrer",
   });
   createReadStream(filePath).pipe(res);
   return true;
@@ -894,6 +1007,11 @@ const server = createServer(async (req, res) => {
       // P4 大厅房间列表（公开摘要：房间号/房主昵称/人数/视频数）。
       sendJson(res, 200, { rooms: registry.listRooms() });
     } else if (url.pathname === "/api/auth/login" && req.method === "POST") {
+      // M2：登录接口限流（10 次/分钟/IP），配合用户名级失败锁定防撞库。
+      if (!rateLimit("login", clientIp(req))) {
+        sendJson(res, 429, { error: "尝试过于频繁，请稍后再试" });
+        return;
+      }
       await handleLogin(req, res, await readBody(req));
     } else if (url.pathname === "/api/me" && req.method === "GET") {
       handleMe(req, res);
@@ -943,8 +1061,13 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// P3：WebSocket 房间端点 /ws?room=<id>&token=<memberToken>（鉴权后入场）
-const wss = new WebSocketServer({ noServer: true });
+// P3：WebSocket 房间端点。M3：令牌优先经子协议 sf.token.<memberToken> 传递（不进 URL），
+// 兼容期仍接受 ?token= query（旧客户端/测试）。
+const wss = new WebSocketServer({
+  noServer: true,
+  // 回写协商子协议：浏览器只接受被服务端 echo 的那一项。
+  handleProtocols: (protocols) => (protocols.has("syncframe.v1") ? "syncframe.v1" : false),
+});
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   if (url.pathname !== "/ws") {
@@ -952,7 +1075,14 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
   const roomId = (url.searchParams.get("room") || "").trim().slice(0, 64);
-  const token = url.searchParams.get("token");
+  // M3：从 Sec-WebSocket-Protocol 取 sf.token.<token>（URL 里不再出现 12h 令牌）。
+  const protoHeader = String(req.headers["sec-websocket-protocol"] ?? "");
+  const protoToken = protoHeader
+    .split(",")
+    .map((s) => s.trim())
+    .find((s) => s.startsWith("sf.token."))
+    ?.slice("sf.token.".length) ?? null;
+  const token = protoToken ?? url.searchParams.get("token");
   const member = registry.authenticate(roomId, token);
   if (!member) {
     // 未知房间/无效令牌：拒绝升级（P3 房间鉴权门）。
@@ -993,6 +1123,6 @@ server.listen(PORT, () => {
   console.log(`  GET  /api/rooms | POST /api/rooms（需登录）| /api/rooms/:id/join   （房间列表 + 房间鉴权）`);
   console.log(`  GET  /api/browse?room=&provider= | /api/search?provider=&keywords=   （房主本人媒体库）`);
   console.log(`  POST /api/rooms/:id/media | GET .../media/:mediaId/grant   （受控映射 + 短期凭证）`);
-  console.log(`  GET  .../media/:mediaId/stream?token=   （Bilibili 流反代，Range 透传）`);
-  console.log(`  WS   /ws?room=<id>&token=<memberToken>   （凭成员令牌入场）`);
+  console.log(`  GET  .../media/:mediaId/stream?ticket=   （Bilibili 流反代，Range 透传，60s 票据）`);
+  console.log(`  WS   /ws?room=<id>（子协议 sf.token.*）   （凭成员令牌入场）`);
 });

@@ -433,10 +433,12 @@ if (role === "host") {
 const wsProto = location.protocol === "https:" ? "wss" : "ws";
 const wsUrl = new URL(`${wsProto}://${location.host}/ws`);
 wsUrl.searchParams.set("room", roomId);
-wsUrl.searchParams.set("token", memberToken);
+// M3：成员令牌经 WebSocket 子协议传递（sf.token.<token>），URL 中不再出现令牌（防日志/Referer 泄漏）。
+const wsProtocols = ["syncframe.v1", `sf.token.${memberToken}`];
 
 const client = new SyncClient({
   wsUrl: wsUrl.toString(),
+  wsProtocols,
   role,
   media: adapter,
   hardDriftMs,
