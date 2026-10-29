@@ -1,15 +1,19 @@
-# SyncFrame 一键部署环境
+# SyncFrame 一键部署（单容器）
 #
 # 用法（仓库根目录 = 包含本文件的目录）：
-#   docker compose up --build
-# 然后浏览器打开 http://localhost:7300/lobby.html
+#   docker compose up --build -d
+# 然后浏览器打开 http://localhost:7300/
 #
-# 服务：
-#   - web：nginx 托管 Vite 构建产物，/api 与 /ws 反代到 server
-#   - server：Node 后端（账户权限 + 房间鉴权 + 同步 + provider 媒体解析）
+# 服务：单个 server 容器同时提供
+#   - 前端静态资源（Vite 构建产物，由后端托管，/ 自动进入大厅）
+#   - /api 房间鉴权 / 媒体授权 REST
+#   - /ws  WebSocket 同步房间（长连接）
 #
 # 管理员账户通过环境变量初始化（注册已关闭，账户全部由管理员管理）：
 #   ADMIN_USERNAME / ADMIN_PASSWORD
+#
+# 反向代理：本编排不再内置 nginx；如需域名/HTTPS，请自行在最外层反代
+# 到映射端口（注意 /ws 需要 Upgrade 长连接，示例见 README）。
 
 services:
   server:
@@ -20,16 +24,6 @@ services:
       SERVER_PORT: "8787"
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-    expose:
-      - "8787"
-    restart: unless-stopped
-
-  web:
-    build:
-      context: .
-      dockerfile: deploy/web.Dockerfile
     ports:
-      - "7300:80"
-    depends_on:
-      - server
+      - "7300:8787"
     restart: unless-stopped

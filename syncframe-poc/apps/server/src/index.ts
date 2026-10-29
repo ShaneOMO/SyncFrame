@@ -38,6 +38,9 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import path from "node:path";
 import { WebSocketServer } from "ws";
 import { OpenListClient } from "@syncframe/openlist-adapter";
 import { RoomManager } from "./sync-rooms.ts";
@@ -801,6 +804,60 @@ function clientIp(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
 }
 
+// ── 静态资源托管（单容器部署：后端直接出前端构建产物；反向代理由用户自行设置）──
+// 仅当 WEB_DIST 指向 Vite 构建产物目录时启用；本地开发仍走 Vite（HMR + 代理）。
+const WEB_DIST = (process.env.WEB_DIST ?? "").replace(/\/+$/, "");
+
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".ico": "image/x-icon",
+};
+
+/** 托管 Vite 多页构建产物。返回 true 表示请求已处理；路径穿越已防护。 */
+async function tryServeStatic(res: ServerResponse, pathname: string): Promise<boolean> {
+  if (!WEB_DIST) return false;
+  let rel: string;
+  try {
+    rel = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+  const distRoot = path.resolve(WEB_DIST);
+  const clean = path.normalize(rel).replace(/^([/\\])+/, "");
+  let filePath = path.join(distRoot, clean);
+  if (filePath !== distRoot && !filePath.startsWith(distRoot + path.sep)) return false;
+  let info = await stat(filePath).catch(() => null);
+  if (info?.isDirectory()) {
+    filePath = path.join(filePath, "index.html");
+    info = await stat(filePath).catch(() => null);
+  }
+  if (!info?.isFile()) {
+    // 多页应用：/lobby、/room 这类无扩展路径补 .html 再试一次
+    if (filePath.endsWith(".html")) return false;
+    const alt = `${filePath}.html`;
+    const altInfo = await stat(alt).catch(() => null);
+    if (!altInfo?.isFile()) return false;
+    filePath = alt;
+    info = altInfo;
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  res.writeHead(200, {
+    "Content-Type": MIME_TYPES[ext] ?? "application/octet-stream",
+    "Content-Length": info.size,
+    // 带内容哈希的静态资源长缓存；HTML 不缓存（保证发版即生效）
+    "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
+  });
+  createReadStream(filePath).pipe(res);
+  return true;
+}
+
 // ── HTTP 路由 ───────────────────────────────────────────────
 
 const server = createServer(async (req, res) => {
@@ -860,6 +917,8 @@ const server = createServer(async (req, res) => {
     } else if (url.pathname.startsWith("/api/rooms/") && req.method === "GET" && url.pathname.endsWith("/stream")) {
       const parts = url.pathname.split("/"); // ["","api","rooms",:id,"media",:mediaId,"stream"]
       await handleStream(req, res, parts[3], parts[5], url);
+    } else if (req.method === "GET" && (await tryServeStatic(res, url.pathname))) {
+      // 静态资源（单容器部署：WEB_DIST 指向 Vite 构建产物；本地开发走 Vite 不经过这里）
     } else {
       sendJson(res, 404, { error: "not found" });
     }
@@ -909,7 +968,9 @@ const registrySweep = setInterval(() => {
 registrySweep.unref();
 
 server.listen(PORT, () => {
-  console.log(`SyncFrame 后端已启动: http://localhost:${PORT}`);
+  console.log(`SyncFrame 已启动: http://localhost:${PORT}${WEB_DIST ? "（含前端静态资源，单端口）" : ""}`);
+  if (WEB_DIST) console.log(`  静态资源目录: ${WEB_DIST}`);
+  else console.log("  提示: 未设置 WEB_DIST，仅提供 API/WS（前端请用 Vite 开发服务器或另行托管）");
   console.log(`  POST /api/auth/login | GET /api/me | PUT /api/me/providers   （账户与 provider；注册已关闭）`);
   console.log(`  GET/POST/DELETE /api/admin/users…   （管理员账户管理）`);
   console.log(`  GET  /api/rooms | POST /api/rooms（需登录）| /api/rooms/:id/join   （房间列表 + 房间鉴权）`);
