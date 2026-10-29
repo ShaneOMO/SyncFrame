@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SyncFrame</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='5' fill='%230A0A0B' stroke='%230A84FF'/%3E%3Cpath d='M10 8.2v7.6L16 12z' fill='%230A84FF'/%3E%3C/svg%3E" />
+  <!-- 入口路由：/ 与 /lobby.html 等价。生产 nginx 直接索引 lobby.html，
+       这里主要兜住 Vite 开发服务器（其根路径无默认文档）。 -->
+  <meta http-equiv="refresh" content="0; url=/lobby.html" />
+  <script>
+    location.replace("/lobby.html" + location.search + location.hash);
+  </script>
+  <style>
+    html, body { height: 100%; }
+    body {
+      margin: 0; display: flex; align-items: center; justify-content: center;
+      background: #0a0a0b; color: #f5f5f7;
+      font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    a { color: #0a84ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <p>正在进入 SyncFrame 大厅…若无自动跳转，请<a href="/lobby.html">点击这里</a>。</p>
+</body>
+</html>

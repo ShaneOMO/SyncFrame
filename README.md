@@ -29,7 +29,7 @@ OpenList 媒体字节由播放器直连拉取，Bilibili 流经服务端反代�
 ```text
 SyncFrame/
 ├── syncframe-poc/            # 全部代码（npm workspaces：apps + packages + tests）
-│   ├── apps/web/             # Vite 前端：大厅 lobby.html（入口）/ 房间 room.html
+│   ├── apps/web/             # Vite 前端：入口 /（重定向至大厅）· 大厅 lobby.html · 房间 room.html
 │   ├── apps/server/          # Node 后端：REST 鉴权 + WebSocket 同步房间 + OpenList 媒体库/媒体授权
 │   ├── packages/sync-protocol/# 同步协议包（时钟偏移、跟随纠偏、消息校验）
 │   ├── packages/openlist-adapter/ # OpenList API 适配器
@@ -68,7 +68,7 @@ npm run p1:server
 npm run p1:web
 ```
 
-打开 **http://localhost:5173/lobby.html** → 输入昵称 → 创建房间 → 把邀请链接发给观众即可同步观影。
+打开 **http://localhost:5173/**（自动进入大厅）→ 登录 → 创建房间 → 把邀请链接发给观众即可同步观影。
 
 **开发：**
 
@@ -86,7 +86,7 @@ npm run p1:web
 docker compose up --build -d
 ```
 
-构建并启动两个容器，然后浏览器打开 **http://localhost:7300/lobby.html**。
+构建并启动两个容器，然后浏览器打开 **http://localhost:7300/**（自动进入大厅）。
 
 管理员账户通过环境变量注入（**不写入镜像**）。在仓库根目录建一个 `.env`
 （compose 会自动读取，该文件已被 gitignore）：
