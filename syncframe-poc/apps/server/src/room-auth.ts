@@ -202,19 +202,44 @@ export class RoomRegistry {
     return this.rooms.get(roomId);
   }
 
-  /** 创建房间：创建者即房主（memberToken 直接签发）；hostSecret 用于房主重建会话。 */
-  createRoom(hostName: string, hostUser: string, hostClientId?: string): {
+  /** 自定义房间号/邀请码的合法形态（让用户可以长期固定使用同一个房间）。 */
+  static readonly ROOM_ID_RE = /^[a-z0-9][a-z0-9_-]{2,23}$/;
+  static readonly INVITE_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9-]{3,15}$/;
+
+  /**
+   * 创建房间：创建者即房主（memberToken 直接签发）；hostSecret 用于房主重建会话。
+   * opts.roomId / opts.inviteCode：可选自定义字符串（校验形态与唯一性，roomId 存小写、邀请码存大写）。
+   * 名字为空、roomId 已被占用、邀请码形态非法时抛出 Error（调用方转 400/409）。
+   */
+  createRoom(hostName: string, hostUser: string, hostClientId?: string, opts: { roomId?: string; inviteCode?: string } = {}): {
     room: RoomRecord;
     member: MemberRecord;
     hostSecret: string;
   } {
-    const name = hostName.trim().slice(0, 24) || "房主";
-    let roomId = randomBytes(4).toString("base64url").replace(/[-_]/g, "a").slice(0, 6).toLowerCase();
-    while (this.rooms.has(roomId)) roomId = makeMediaId().slice(2, 10).toLowerCase();
+    const name = hostName.trim().slice(0, 24);
+    if (!name) throw new Error("房间名不能为空");
+    let roomId: string;
+    if (opts.roomId !== undefined) {
+      roomId = opts.roomId.toLowerCase();
+      if (!RoomRegistry.ROOM_ID_RE.test(roomId)) throw new Error("房间号需为 3-24 位小写字母/数字/连字符/下划线，且以字母或数字开头");
+      if (this.rooms.has(roomId)) throw new Error(`房间号 ${roomId} 已被占用`);
+    } else {
+      roomId = randomBytes(4).toString("base64url").replace(/[-_]/g, "a").slice(0, 6).toLowerCase();
+      while (this.rooms.has(roomId)) roomId = makeMediaId().slice(2, 10).toLowerCase();
+    }
+    let inviteCode: string;
+    if (opts.inviteCode !== undefined) {
+      inviteCode = opts.inviteCode.toUpperCase();
+      if (!RoomRegistry.INVITE_CODE_RE.test(inviteCode)) {
+        throw new Error("邀请码需为 4-16 位字母/数字（可含连字符）");
+      }
+    } else {
+      inviteCode = makeInviteCode();
+    }
     const hostSecret = randomUUID();
     const room: RoomRecord = {
       roomId,
-      inviteCode: makeInviteCode(),
+      inviteCode,
       hostSecret,
       createdAt: this.now(),
       lastActiveAt: this.now(),
@@ -256,7 +281,7 @@ export class RoomRegistry {
     name: string,
     opts: { inviteCode?: string; hostSecret?: string } = {},
   ): MemberRecord | null {
-    const room = this.rooms.get(roomId);
+    const room = this.rooms.get(roomId.toLowerCase());
     if (!room) return null;
     const isHost = opts.hostSecret !== undefined && opts.hostSecret === room.hostSecret;
     if (!isHost) {

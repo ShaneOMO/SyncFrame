@@ -212,3 +212,28 @@ input[type="range"]:disabled { accent-color: var(--border-strong); }
   button { min-height: 40px; }
   .card, .panel { padding: var(--sp-4) var(--sp-4); }
 }
+
+/* ── 账户设置弹窗（user-settings.ts 动态创建，大厅/房间页共用） ── */
+.settings-h {
+  font-size: var(--fs-caption); font-weight: 600; color: var(--text-dim);
+  letter-spacing: 0.4px; text-transform: uppercase;
+  display: flex; align-items: center; gap: 6px; margin: var(--sp-5) 0 var(--sp-2);
+}
+.provider-who { font-size: var(--fs-small); color: var(--text-dim); margin: 0 0 var(--sp-3); }
+.provider-who b { color: var(--text); }
+.provider-row {
+  display: flex; align-items: center; gap: var(--sp-2);
+  border: 0.5px solid var(--border); border-radius: var(--radius);
+  padding: 8px var(--sp-3); font-size: var(--fs-small);
+  transition: border-color var(--dur) var(--ease);
+}
+.provider-row:hover { border-color: var(--border-strong); }
+.provider-row .kind {
+  font-size: 11px; color: var(--text-dim);
+  border: 0.5px solid var(--border); border-radius: var(--radius-pill); padding: 1px 8px;
+}
+.provider-row .url { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-row button { margin: 0 0 0 auto; padding: 3px 12px; font-size: var(--fs-caption); }
+.provider-form { display: flex; flex-direction: column; gap: 8px; }
+.provider-form button { margin-top: 2px; }
+.provider-hint { color: var(--text-faint); font-size: var(--fs-caption); margin: var(--sp-2) 0; line-height: 1.6; }

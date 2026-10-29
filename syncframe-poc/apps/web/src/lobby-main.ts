@@ -1,15 +1,17 @@
 /**
  * 大厅页：
  * - 房间列表：GET /api/rooms 展示本实例活跃房间（房间号/房主/人数/视频数），点击房间号填入加入表单；
- * - 右上角登录按钮：仅登录（注册已关闭，账户由管理员创建）；登录后可配置自己的视频 provider
- *   （OpenList 凭据 / Bilibili cookie 只存服务端内存；直链与 B 站免配置）；
- * - 权限模型：游客只能凭邀请码加入房间；创建房间必须登录；管理员额外拥有账户管理面板。
+ * - 右上角用户按钮：未登录 → 登录弹窗（仅登录，注册已关闭，账户由管理员创建）；
+ *   已登录 → 「账户设置」弹窗（provider 管理 / 管理员账户面板，见 user-settings.ts）；
+ * - 创建房间：必须登录 + 房间名必填；房间号与邀请码可自定义（固定房间长期使用）；
+ * - 权限模型：游客只能凭邀请码加入房间；管理员额外拥有账户管理面板。
  *
  * 加入成功后把成员令牌写入 sessionStorage（见 session.ts），
  * 再跳转 /room.html?room=<id>&name=<n>；房间页据此恢复会话，令牌过期则回到本页。
  */
 
 import { saveSession } from "./session.ts";
+import { openUserSettings } from "./user-settings.ts";
 
 const $ = <T extends HTMLElement>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -64,17 +66,25 @@ $("#createBtn").addEventListener("click", async () => {
     openModal();
     return;
   }
-  const name = ($("#createName") as HTMLInputElement).value.trim() || user.username;
+  // 房间名必填（服务端同样校验，空名直接 400）。
+  const name = ($("#createName") as HTMLInputElement).value.trim();
+  if (!name) {
+    msg("请填写房间名");
+    ($("#createName") as HTMLInputElement).focus();
+    return;
+  }
+  const roomId = ($("#createRoomId") as HTMLInputElement).value.trim();
+  const inviteCode = ($("#createInvite") as HTMLInputElement).value.trim();
   const btn = $("#createBtn") as HTMLButtonElement;
   btn.disabled = true;
   try {
     // 创建房间必须登录：携带用户令牌（服务端游客 401）。
-    const data = await postJson("/api/rooms", { name }, user.token);
-    const roomId = String(data.roomId);
+    const data = await postJson("/api/rooms", { name, roomId, inviteCode }, user.token);
+    const newRoomId = String(data.roomId);
     // 邀请码/hostSecret 只在创建响应里出现一次：存进 sessionStorage 供房间页展示与房主重建会话。
-    sessionStorage.setItem(`syncframe-invite-${roomId}`, String(data.inviteCode));
-    sessionStorage.setItem(`syncframe-hostsecret-${roomId}`, String(data.hostSecret));
-    enterRoom(roomId, data, name);
+    sessionStorage.setItem(`syncframe-invite-${newRoomId}`, String(data.inviteCode));
+    sessionStorage.setItem(`syncframe-hostsecret-${newRoomId}`, String(data.hostSecret));
+    enterRoom(newRoomId, data, name);
   } catch (err) {
     msg(`创建失败：${err instanceof Error ? err.message : err}`);
   } finally {
@@ -158,10 +168,12 @@ async function refreshRoomList(): Promise<void> {
       });
       const host = document.createElement("span");
       host.className = "room-host";
-      host.textContent = `房主：${r.hostName}`;
+      host.textContent = r.hostName;
       const meta = document.createElement("span");
       meta.className = "room-meta";
-      meta.textContent = `${r.memberCount} 人在线 · ${r.mediaCount} 个视频`;
+      meta.innerHTML = `<span></span><span class="dot">·</span><span></span>`;
+      meta.querySelectorAll("span")[0].textContent = `${r.memberCount} 人在线`;
+      meta.querySelectorAll("span")[2].textContent = `${r.mediaCount} 个视频`;
       row.append(idBtn, host, meta);
       listEl.appendChild(row);
     }
@@ -178,21 +190,13 @@ $("#refreshRooms").addEventListener("click", () => void refreshRoomList());
 void refreshRoomList();
 window.setInterval(refreshRoomList, 15_000);
 
-// ── 登录与 provider 配置 ──────────────────────────────────
+// ── 登录 ──────────────────────────────────────────────────
 
 const USER_KEY = "syncframe-user"; // localStorage：{ token, username }（浏览器长期持有）
 
 interface UserState {
   token: string;
   username: string;
-}
-
-interface PublicProvider {
-  id: string;
-  kind: "openlist" | "bilibili";
-  label: string;
-  baseUrl?: string;
-  username?: string;
 }
 
 function loadUser(): UserState | null {
@@ -209,9 +213,6 @@ function loadUser(): UserState | null {
 let user = loadUser();
 
 const authModal = $("#authModal") as HTMLElement;
-const authFormsEl = $("#authForms") as HTMLElement;
-const providerPanelEl = $("#providerPanel") as HTMLElement;
-const adminPanelEl = $("#adminPanel") as HTMLElement;
 
 function userHeaders(): Record<string, string> {
   return user ? { Authorization: `Bearer ${user.token}` } : {};
@@ -223,49 +224,52 @@ function renderCreateGate(): void {
   ($("#createForm") as HTMLElement).hidden = !user;
 }
 
-/** 拉取 /api/me 刷新登录态与 provider 列表；令牌失效则登出。 */
+/** 顶栏用户按钮文案与创建入口（provider 管理在 user-settings.ts 的账户设置弹窗）。 */
 async function refreshAuthState(): Promise<void> {
   const btnText = $("#loginBtnText");
   if (!user) {
     btnText.textContent = "登录";
-    authFormsEl.hidden = false;
-    providerPanelEl.hidden = true;
     renderCreateGate();
     return;
   }
   try {
     const res = await fetch("/api/me", { headers: userHeaders() });
     if (!res.ok) throw new Error("expired");
-    const body = (await res.json()) as { username: string; role?: string; providers: PublicProvider[] };
+    const body = (await res.json()) as { username: string };
+    user.username = body.username;
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
     btnText.textContent = body.username;
-    authFormsEl.hidden = true;
-    providerPanelEl.hidden = false;
-    renderProviders(body.providers);
     renderCreateGate();
-    // 管理员额外显示账户管理面板。
-    const isAdmin = body.role === "admin";
-    adminPanelEl.hidden = !isAdmin;
-    if (isAdmin) void refreshAdminUsers();
   } catch {
     // 服务端重启等导致令牌失效：清理本地状态回登录态。
     user = null;
     localStorage.removeItem(USER_KEY);
     btnText.textContent = "登录";
-    authFormsEl.hidden = false;
-    providerPanelEl.hidden = true;
     renderCreateGate();
   }
 }
 
 function openModal(): void {
   authModal.hidden = false;
-  void refreshAuthState();
 }
 function closeModal(): void {
   authModal.hidden = true;
 }
 
-$("#loginBtn").addEventListener("click", openModal);
+/** 顶栏用户按钮：未登录 → 登录弹窗；已登录 → 账户设置（provider 管理）。 */
+$("#loginBtn").addEventListener("click", () => {
+  if (user) {
+    void openUserSettings().then((ok) => {
+      if (!ok) {
+        user = null;
+        void refreshAuthState();
+        openModal();
+      }
+    });
+  } else {
+    openModal();
+  }
+});
 $("#authClose").addEventListener("click", closeModal);
 authModal.addEventListener("click", (e) => {
   if (e.target === authModal) closeModal();
@@ -277,216 +281,14 @@ $("#authSubmit").addEventListener("click", async () => {
   const msgEl2 = $("#authMsg");
   msgEl2.textContent = "";
   try {
-    // 注册已关闭：只有登录。账户由管理员在「账户管理」中创建。
+    // 注册已关闭：只有登录。账户由管理员在「账户设置 → 账户管理」中创建。
     const data = await postJson("/api/auth/login", { username, password });
     user = { token: String(data.userToken), username: String(data.username ?? username).trim() };
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     ($("#authPassword") as HTMLInputElement).value = "";
+    closeModal();
     await refreshAuthState();
-  } catch (err) {
-    msgEl2.textContent = err instanceof Error ? err.message : String(err);
-  }
-});
-
-$("#logoutBtn").addEventListener("click", () => {
-  user = null;
-  localStorage.removeItem(USER_KEY);
-  void refreshAuthState();
-});
-
-// ── 管理员：账户创建/删除/重置密码（注册已关闭，账户只能由管理员创建）─────────
-
-interface AdminUser {
-  username: string;
-  role: "admin" | "user";
-  providerCount: number;
-}
-
-async function refreshAdminUsers(): Promise<void> {
-  const msgEl2 = $("#adminMsg");
-  try {
-    const res = await fetch("/api/admin/users", { headers: userHeaders() });
-    const body = (await res.json().catch(() => ({}))) as { users?: AdminUser[]; error?: string };
-    if (!res.ok || !body.users) {
-      msgEl2.textContent = body.error ?? `HTTP ${res.status}`;
-      return;
-    }
-    const listEl = $("#adminUserList");
-    listEl.textContent = "";
-    for (const u of body.users) {
-      const row = document.createElement("div");
-      row.className = "provider-row";
-      const role = document.createElement("span");
-      role.className = "kind";
-      role.textContent = u.role === "admin" ? "管理员" : "用户";
-      const name = document.createElement("b");
-      name.textContent = u.username;
-      const meta = document.createElement("span");
-      meta.className = "url";
-      meta.textContent = `${u.providerCount} 个 provider`;
-      row.append(role, name, meta);
-      const reset = document.createElement("button");
-      reset.textContent = "重置密码";
-      reset.addEventListener("click", () => {
-        const pw = prompt(`为 ${u.username} 设置新密码（至少 4 位）：`);
-        if (!pw) return;
-        void (async () => {
-          const r = await fetch(`/api/admin/users/${encodeURIComponent(u.username)}/password`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...userHeaders() },
-            body: JSON.stringify({ password: pw }),
-          });
-          const b = (await r.json().catch(() => ({}))) as { error?: string };
-          msgEl2.textContent = r.ok ? `已重置 ${u.username} 的密码` : (b.error ?? `HTTP ${r.status}`);
-        })();
-      });
-      row.appendChild(reset);
-      if (u.username !== user?.username) {
-        const del = document.createElement("button");
-        del.className = "danger";
-        del.textContent = "删除";
-        del.addEventListener("click", () => {
-          if (!confirm(`确定删除账户 ${u.username}？其凭据与会话将立即失效。`)) return;
-          void (async () => {
-            const r = await fetch(`/api/admin/users/${encodeURIComponent(u.username)}`, {
-              method: "DELETE",
-              headers: userHeaders(),
-            });
-            const b = (await r.json().catch(() => ({}))) as { error?: string };
-            msgEl2.textContent = r.ok ? `已删除 ${u.username}` : (b.error ?? `HTTP ${r.status}`);
-            if (r.ok) void refreshAdminUsers();
-          })();
-        });
-        row.appendChild(del);
-      }
-      listEl.appendChild(row);
-    }
-  } catch (err) {
-    msgEl2.textContent = err instanceof Error ? err.message : String(err);
-  }
-}
-
-$("#aCreate").addEventListener("click", () => {
-  const msgEl2 = $("#adminMsg");
-  msgEl2.textContent = "";
-  const username = ($("#aNewUsername") as HTMLInputElement).value.trim();
-  const password = ($("#aNewPassword") as HTMLInputElement).value;
-  void (async () => {
-    try {
-      const res = await fetch("/api/admin/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...userHeaders() },
-        body: JSON.stringify({ username, password }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) {
-        msgEl2.textContent = body.error ?? `HTTP ${res.status}`;
-        return;
-      }
-      msgEl2.textContent = `已创建账户 ${username}`;
-      ($("#aNewUsername") as HTMLInputElement).value = "";
-      ($("#aNewPassword") as HTMLInputElement).value = "";
-      void refreshAdminUsers();
-    } catch (err) {
-      msgEl2.textContent = err instanceof Error ? err.message : String(err);
-    }
-  })();
-});
-
-function renderProviders(providers: PublicProvider[]): void {
-  $("#providerUser").textContent = user?.username ?? "-";
-  const listEl = $("#providerList");
-  listEl.textContent = "";
-  if (providers.length === 0) {
-    const d = document.createElement("div");
-    d.className = "browse-empty";
-    d.textContent = "（尚未配置 provider；可添加 OpenList / 哔哩哔哩，或在房间里直接用直链、B 站链接）";
-    listEl.appendChild(d);
-    return;
-  }
-  for (const p of providers) {
-    const row = document.createElement("div");
-    row.className = "provider-row";
-    const kind = document.createElement("span");
-    kind.className = "kind";
-    kind.textContent = p.kind === "openlist" ? "OpenList" : "哔哩哔哩";
-    const label = document.createElement("b");
-    label.textContent = p.label;
-    const url = document.createElement("span");
-    url.className = "url";
-    url.textContent = p.kind === "openlist" ? `${p.baseUrl} · ${p.username}` : "SESSDATA 凭据仅存服务端";
-    const del = document.createElement("button");
-    del.className = "danger";
-    del.textContent = "删除";
-    del.addEventListener("click", () => void saveProviders(providers.filter((x) => x.id !== p.id)));
-    row.append(kind, label, url, del);
-    listEl.appendChild(row);
-  }
-}
-
-/** 全量替换 provider 配置（含既有项的编辑入口未做，删除/添加覆盖 PoC 需求）。 */
-async function saveProviders(next: PublicProvider[]): Promise<void> {
-  const msgEl2 = $("#providerMsg");
-  msgEl2.textContent = "";
-  try {
-    const res = await fetch("/api/me/providers", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", ...userHeaders() },
-      body: JSON.stringify({ providers: next }),
-    });
-    const body = (await res.json().catch(() => ({}))) as { providers?: PublicProvider[]; error?: string };
-    if (!res.ok || !body.providers) {
-      msgEl2.textContent = body.error ?? `HTTP ${res.status}`;
-      return;
-    }
-    renderProviders(body.providers);
-    msgEl2.textContent = "已保存";
-  } catch (err) {
-    msgEl2.textContent = err instanceof Error ? err.message : String(err);
-  }
-}
-
-$("#pKind").addEventListener("change", () => {
-  const kind = ($("#pKind") as HTMLSelectElement).value;
-  ($("#pOpenlistFields") as HTMLElement).hidden = kind !== "openlist";
-  ($("#pBilibiliFields") as HTMLElement).hidden = kind !== "bilibili";
-});
-
-$("#pAdd").addEventListener("click", async () => {
-  const msgEl2 = $("#providerMsg");
-  msgEl2.textContent = "";
-  const kind = ($("#pKind") as HTMLSelectElement).value;
-  let next: Record<string, unknown> | null = null;
-  if (kind === "openlist") {
-    const label = ($("#pLabel") as HTMLInputElement).value.trim();
-    const baseUrl = ($("#pBaseUrl") as HTMLInputElement).value.trim();
-    const username = ($("#pUsername") as HTMLInputElement).value.trim();
-    const password = ($("#pPassword") as HTMLInputElement).value;
-    if (!baseUrl || !username || !password) {
-      msgEl2.textContent = "请填写完整的 OpenList 地址、用户名与密码";
-      return;
-    }
-    next = { id: "", kind: "openlist", label: label || "OpenList", baseUrl, username, password };
-  } else {
-    const label = ($("#pBiliLabel") as HTMLInputElement).value.trim();
-    const cookie = ($("#pBiliCookie") as HTMLInputElement).value.trim();
-    next = { id: "", kind: "bilibili", label: label || "哔哩哔哩", cookie };
-  }
-  // 基于当前渲染的列表 + 新增项；更简单做法是从 /api/me 重拉。
-  try {
-    const me = await fetch("/api/me", { headers: userHeaders() }).then((r) => r.json()) as { providers: PublicProvider[] };
-    await saveProviders([
-      ...me.providers,
-      next as unknown as PublicProvider,
-    ]);
-    if (msgEl2.textContent === "已保存") {
-      ($("#pLabel") as HTMLInputElement).value = "";
-      ($("#pBaseUrl") as HTMLInputElement).value = "";
-      ($("#pUsername") as HTMLInputElement).value = "";
-      ($("#pPassword") as HTMLInputElement).value = "";
-      ($("#pBiliLabel") as HTMLInputElement).value = "";
-      ($("#pBiliCookie") as HTMLInputElement).value = "";
-    }
+    msg(`已登录 ${user.username}；点击右上角用户名可管理视频 provider`);
   } catch (err) {
     msgEl2.textContent = err instanceof Error ? err.message : String(err);
   }

@@ -140,7 +140,43 @@
     .stat-box:hover { border-color: var(--border-strong); }
     .stat-box b { display: block; font-size: 18px; font-weight: 600; color: var(--text); font-family: var(--font-mono); margin-top: 2px; }
 
-    #addCard select, #addCard input { width: 100%; }
+    /* ── 添加影片弹窗 ── */
+    .modal {
+      position: fixed; inset: 0; z-index: 50; display: flex;
+      align-items: flex-start; justify-content: center; padding: 8vh 16px 16px;
+      background: rgba(0, 0, 0, 0.6);
+      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(8px);
+    }
+    .modal[hidden] { display: none; }
+    .modal-card {
+      width: 100%; max-width: 460px; background: var(--panel);
+      border: 0.5px solid var(--border-strong); border-radius: var(--radius-lg);
+      padding: var(--sp-5); box-shadow: var(--shadow-pop);
+      max-height: 84vh; overflow-y: auto;
+    }
+    .modal-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+    .modal-head h2 { font-size: var(--fs-title); flex: 1; }
+    .modal-head button.icon { width: 30px; height: 30px; padding: 0; margin-top: 0; }
+    .tabs {
+      display: flex; gap: var(--sp-1); padding: 3px;
+      background: var(--panel-2); border-radius: var(--radius-pill);
+      margin-bottom: var(--sp-4);
+    }
+    .tab { flex: 1; margin-top: 0; padding: 6px 0; font-weight: 500; font-size: var(--fs-small); border: 0; background: transparent; }
+    .tab.active { background: var(--panel-hover); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
+    .add-pane select, .add-pane input { width: 100%; }
+    .add-pane .pane-add { width: 100%; margin-top: var(--sp-3); }
+    #addMediaMsg { min-height: 18px; font-size: var(--fs-caption); color: var(--warning); margin: var(--sp-2) 0 0; }
+    #addMediaMsg.ok { color: var(--success); }
+    .add-hint { color: var(--text-faint); font-size: var(--fs-caption); margin: var(--sp-2) 0 0; line-height: 1.6; }
+    .add-hint button { display: inline; width: auto; margin: 0; padding: 0; font-size: inherit; background: none; border: 0; color: var(--accent); text-decoration: underline; }
+    /* 弹窗内嵌媒体库 */
+    #browseList { margin-top: var(--sp-2); }
+    #openlistPane .row { flex-wrap: wrap; }
+    /* 顶栏自己的成员 chip：可点击打开账户设置 */
+    #members .chip.me { cursor: pointer; border: 0.5px solid var(--border-strong); }
+    #members .chip.me:hover { background: var(--panel-hover); }
 
     /* ── 邀请行：卡片化横条，与内容区同宽 ── */
     #inviteRow {
@@ -225,10 +261,63 @@
         </div>
         <div id="status" role="status" aria-live="polite">初始化…</div>
       </div>
+    </div>
 
-      <!-- 媒体库（仅房主可见；使用房主本人账户的 OpenList provider） -->
-      <div class="card" id="browseCard" hidden>
-        <h3>OpenList 媒体库 <span>仅房主可浏览 · 使用你账户的 provider</span></h3>
+    <div>
+      <!-- 在线人数（房主 + 游客） -->
+      <div class="card" id="statsCard">
+        <h3>在线人数 <span>房主 + 游客</span></h3>
+        <div id="memberStats" class="member-stats">
+          <span class="stat-box">同步用户 <b id="statTotal">0</b></span>
+          <span class="stat-box">房主 <b id="statHost">0</b></span>
+          <span class="stat-box">游客 <b id="statGuest">0</b></span>
+        </div>
+      </div>
+
+      <!-- 播放列表 -->
+      <div class="card">
+        <h3>
+          播放列表 <span>点击播放（房主）</span>
+          <span class="right"><button id="addMediaBtn" class="primary" hidden>＋ 添加影片</button></span>
+        </h3>
+        <div id="mediaList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加影片弹窗（仅房主可见按钮）：直链 / B 站链接 / OpenList 媒体库 / OpenList 路径 -->
+  <div id="addMediaModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="添加影片">
+      <div class="modal-head">
+        <h2>添加影片</h2>
+        <button id="addMediaClose" class="icon ghost" aria-label="关闭">✕</button>
+      </div>
+      <div class="tabs" id="addMediaTabs">
+        <button class="tab active" data-tab="direct">直链</button>
+        <button class="tab" data-tab="bili">B 站链接</button>
+        <button class="tab" data-tab="openlist" id="tabOpenlist" hidden>OpenList 媒体库</button>
+        <button class="tab" data-tab="path" id="tabPath" hidden>OpenList 路径</button>
+      </div>
+
+      <div class="add-pane" data-pane="direct">
+        <input type="text" id="addName" placeholder="视频名称（可选）" maxlength="128" />
+        <input type="text" id="addUrl" placeholder="直链视频地址（http/https）" style="margin-top:6px" />
+        <button id="addDirectBtn" class="primary pane-add">添加到播放列表</button>
+      </div>
+
+      <div class="add-pane" data-pane="bili" hidden>
+        <select id="biliProviderSel" aria-label="B 站来源"></select>
+        <input type="text" id="addBiliUrl" placeholder="B 站视频：BV 号 / av 号 / bilibili 链接" style="margin-top:6px" />
+        <button id="addBiliBtn" class="primary pane-add">添加到播放列表</button>
+      </div>
+
+      <div class="add-pane" data-pane="path" id="pathPane" hidden>
+        <select id="addProvider" aria-label="选择 OpenList provider"></select>
+        <input type="text" id="addPath" placeholder="OpenList 文件路径，如 /movies/a.mkv" style="margin-top:6px" />
+        <button id="addPathBtn" class="primary pane-add">添加到播放列表</button>
+      </div>
+
+      <div class="add-pane" data-pane="openlist" id="openlistPane" hidden>
         <div class="row">
           <select id="browseProvider" style="flex:1 1 180px" aria-label="选择 OpenList provider"></select>
         </div>
@@ -245,42 +334,9 @@
         </div>
         <div id="browseList"></div>
       </div>
-    </div>
 
-    <div>
-      <!-- 在线人数（房主 + 游客） -->
-      <div class="card" id="statsCard">
-        <h3>在线人数 <span>房主 + 游客</span></h3>
-        <div id="memberStats" class="member-stats">
-          <span class="stat-box">同步用户 <b id="statTotal">0</b></span>
-          <span class="stat-box">房主 <b id="statHost">0</b></span>
-          <span class="stat-box">游客 <b id="statGuest">0</b></span>
-        </div>
-      </div>
-
-      <!-- 播放列表 -->
-      <div class="card">
-        <h3>播放列表 <span>点击播放（房主）</span></h3>
-        <div id="mediaList"></div>
-      </div>
-
-      <!-- 手动添加视频（仅房主） -->
-      <div class="card" id="addCard" hidden>
-        <h3>添加视频 <span>选择 provider 后手动添加</span></h3>
-        <label for="addProvider" style="display:block;color:var(--text-dim);font-size:var(--fs-caption);margin:var(--sp-2) 0 var(--sp-1)">视频 provider</label>
-        <select id="addProvider" style="width:100%"></select>
-        <div id="directFields" style="margin-top:var(--sp-2)">
-          <input type="text" id="addName" placeholder="视频名称（可选）" maxlength="128" style="width:100%" />
-          <input type="text" id="addUrl" placeholder="直链视频地址（http/https）" style="width:100%;margin-top:6px" />
-        </div>
-        <div id="biliFields" hidden style="margin-top:var(--sp-2)">
-          <input type="text" id="addBiliUrl" placeholder="B 站视频：BV 号 / av 号 / bilibili 链接" style="width:100%" />
-        </div>
-        <div id="pathFields" hidden style="margin-top:var(--sp-2)">
-          <input type="text" id="addPath" placeholder="OpenList 文件路径，如 /movies/a.mkv" style="width:100%" />
-        </div>
-        <button id="addBtn" class="primary" style="width:100%;margin-top:var(--sp-3)">添加到播放列表</button>
-      </div>
+      <p id="addMediaMsg" role="status" aria-live="polite"></p>
+      <p class="add-hint">需要添加 OpenList / B 站凭据？<button id="addMediaSettings" type="button">点击打开账户设置</button>（也可点顶栏自己的昵称）</p>
     </div>
   </div>
 

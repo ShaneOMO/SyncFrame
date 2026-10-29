@@ -94,9 +94,11 @@ async function main(): Promise<void> {
     await page.fill("#authPassword", ADMIN_PASS);
     await page.click("#authSubmit");
     await sleep(600);
+    await page.click("#loginBtn"); // 用户名按钮 → 账户设置（provider 管理）
+    await sleep(500);
     await page.screenshot({ path: "/tmp/m-lobby-provider.png" });
-    await diagnose(page, "大厅-provider 面板");
-    await page.click("#authClose");
+    await diagnose(page, "大厅-账户设置弹窗");
+    await page.click("#userSettingsModal [data-close]");
     await page.fill("#createName", "移动端房主");
     await page.click("#createBtn");
     await page.waitForURL(/room\.html/, { timeout: 10_000 });
@@ -104,9 +106,9 @@ async function main(): Promise<void> {
     await page.waitForLoadState("networkidle");
     await sleep(800);
     await page.screenshot({ path: "/tmp/m-room-clock.png" });
-    await diagnose(page, "房间-clock（观众态无 addCard）");
+    await diagnose(page, "房间-clock（观众态无添加影片入口）");
 
-    // 房主态：重新开房（host 会话），展示 addCard / 媒体库 / 播放列表
+    // 房主态：重新开房（host 会话），展示添加影片弹窗 / 播放列表
     await page.goto(`${web}/lobby.html`, { waitUntil: "networkidle" });
     await sleep(300);
     await page.fill("#createName", "房主A");
@@ -116,10 +118,10 @@ async function main(): Promise<void> {
     await sleep(600);
     await page.screenshot({ path: "/tmp/m-room-host.png" });
     await diagnose(page, "房间-房主态");
-    await page.selectOption("#addProvider", "direct");
-    await sleep(200);
+    await page.click("#addMediaBtn");
+    await sleep(300);
     await page.screenshot({ path: "/tmp/m-room-addcard.png" });
-    await diagnose(page, "房间-添加视频(direct)");
+    await diagnose(page, "房间-添加影片弹窗(直链)");
 
     await browser.close();
   } finally {

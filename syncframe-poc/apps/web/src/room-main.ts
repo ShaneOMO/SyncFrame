@@ -19,6 +19,7 @@ import wasmUrl from "movi-player/movi.wasm?url";
 import { CountingHttpSource } from "./counting-source.ts";
 import { initBrowsePanel } from "./browse.ts";
 import { loadSession, clearSession } from "./session.ts";
+import { openUserSettings } from "./user-settings.ts";
 import { icon } from "./icons.ts";
 
 const params = new URLSearchParams(location.search);
@@ -454,6 +455,15 @@ const client = new SyncClient({
       const crown = m.role === "host" ? `<span class="crown">${icon("crown", "ic")}</span>` : "";
       chip.innerHTML = `${crown}<span></span>`;
       chip.querySelector("span")!.textContent = m.name;
+      if (m.id === clientId) {
+        // 点击自己的昵称 → 账户设置（provider 管理）。
+        chip.title = "账户设置（provider 管理）";
+        chip.addEventListener("click", () => {
+          void openUserSettings().then((ok) => {
+            if (!ok) setStatus("登录后可管理 provider（右上角退出房间回大厅登录）", true);
+          });
+        });
+      }
       membersEl.appendChild(chip);
     }
     // 右侧在线人数统计（同步用户 = 房主 + 游客）。
@@ -472,35 +482,171 @@ $("#joinPlay").addEventListener("click", () => {
   void client.resumeFromGesture();
 });
 
-// ── 房主控制 ──────────────────────────────────────────────
+// ── 房主控制：添加影片弹窗（直链 / B 站 / OpenList 媒体库 / OpenList 路径）────
 
-// player 模式：OpenList 媒体库 → 注册 mediaId → 广播 load（使用房主本人账户的 provider）
+const addMediaModal = $("#addMediaModal") as HTMLElement;
+const addMediaMsg = $("#addMediaMsg");
+
+function setAddMsg(text: string, ok = false): void {
+  addMediaMsg.textContent = text;
+  addMediaMsg.className = ok ? "ok" : "";
+}
+
 if (mode === "player" && role === "host") {
-  void (async () => {
-    const providers = (await fetchMyProviders()).filter((p) => p.kind === "openlist");
-    if (providers.length === 0) {
-      // 没有 OpenList provider：隐藏浏览面板（仍可用直链 / B 站添加）。
-      setStatus("未配置 OpenList provider：可在「添加视频」中直接用直链或 B 站链接（登录后也可配置 OpenList）", true);
+  ($("#addMediaBtn") as HTMLElement).hidden = false;
+
+  // 弹窗开关与页签切换
+  $("#addMediaBtn").addEventListener("click", () => {
+    addMediaModal.hidden = false;
+    setAddMsg("");
+  });
+  $("#addMediaClose").addEventListener("click", () => (addMediaModal.hidden = true));
+  addMediaModal.addEventListener("click", (e) => {
+    if (e.target === addMediaModal) addMediaModal.hidden = true;
+  });
+  $("#addMediaTabs").addEventListener("click", (e) => {
+    const tab = (e.target as HTMLElement).closest("[data-tab]") as HTMLElement | null;
+    if (!tab) return;
+    for (const t of addMediaModal.querySelectorAll<HTMLElement>(".tab")) t.classList.toggle("active", t === tab);
+    for (const pane of addMediaModal.querySelectorAll<HTMLElement>("[data-pane]")) {
+      pane.hidden = pane.dataset.pane !== tab.dataset.tab;
+    }
+  });
+  $("#addMediaSettings").addEventListener("click", () => {
+    void openUserSettings().then((ok) => {
+      if (!ok) setAddMsg("请先在登录后管理 provider");
+    });
+  });
+
+  /** 注册媒体进播放列表（共用：直链 / B 站 / 路径）。 */
+  async function registerMedia(payload: Record<string, unknown>): Promise<void> {
+    setAddMsg("正在添加…");
+    try {
+      const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/media`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders,
+          ...(localUser ? { "X-User-Token": localUser.token } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        mediaId?: string;
+        name?: string;
+        error?: string;
+      };
+      if (!res.ok || !body.mediaId) {
+        setAddMsg(`添加失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`);
+        return;
+      }
+      setAddMsg(`已添加: ${body.name}（点播放列表条目开播）`, true);
+      await refreshMediaList();
+    } catch (err) {
+      setAddMsg(`添加失败: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  // 直链
+  $("#addDirectBtn").addEventListener("click", () => {
+    const name = ($("#addName") as HTMLInputElement).value.trim();
+    const url = ($("#addUrl") as HTMLInputElement).value.trim();
+    if (!url) {
+      setAddMsg("请填写直链视频地址");
       return;
     }
-    $("#browseCard").hidden = false;
-    const providerSel = $("#browseProvider") as HTMLSelectElement;
-    providerSel.textContent = "";
-    for (const p of providers) {
+    void registerMedia({ provider: "direct", name, url }).then(() => {
+      ($("#addUrl") as HTMLInputElement).value = "";
+    });
+  });
+
+  // B 站：免配置匿名，或用户已配置的 bilibili provider（带 SESSDATA）
+  $("#addBiliBtn").addEventListener("click", () => {
+    const provider = ($("#biliProviderSel") as HTMLSelectElement).value;
+    const url = ($("#addBiliUrl") as HTMLInputElement).value.trim();
+    if (!url) {
+      setAddMsg("请填写 BV 号 / av 号 / bilibili 链接");
+      return;
+    }
+    void registerMedia({ provider, url }).then(() => {
+      ($("#addBiliUrl") as HTMLInputElement).value = "";
+    });
+  });
+
+  // OpenList 路径（手动填路径）
+  $("#addPathBtn").addEventListener("click", () => {
+    const value = ($("#addProvider") as HTMLSelectElement).value;
+    const path = ($("#addPath") as HTMLInputElement).value.trim();
+    if (!value) {
+      setAddMsg("请选择 OpenList provider（在账户设置中添加）");
+      return;
+    }
+    if (!path) {
+      setAddMsg("请填写 OpenList 文件路径");
+      return;
+    }
+    void registerMedia({ provider: value, path }).then(() => {
+      ($("#addPath") as HTMLInputElement).value = "";
+    });
+  });
+
+  // 拉取本人 provider：填充 B 站来源 / OpenList provider 下拉，并按需挂载媒体库浏览。
+  void (async () => {
+    const providers = await fetchMyProviders();
+    const biliSel = $("#biliProviderSel") as HTMLSelectElement;
+    biliSel.textContent = "";
+    const optAnon = document.createElement("option");
+    optAnon.value = "bilibili";
+    optAnon.textContent = "免配置（匿名，无需 SESSDATA）";
+    biliSel.appendChild(optAnon);
+    const pathSel = $("#addProvider") as HTMLSelectElement;
+    pathSel.textContent = "";
+    const browseSel = $("#browseProvider") as HTMLSelectElement;
+    browseSel.textContent = "";
+
+    const openlist = providers.filter((p) => p.kind === "openlist");
+    for (const p of providers.filter((x) => x.kind === "bilibili")) {
+      const o = document.createElement("option");
+      o.value = `bilibili:${p.id}`;
+      o.textContent = `${p.label}（已配置 SESSDATA）`;
+      biliSel.appendChild(o);
+    }
+    for (const p of openlist) {
       const o = document.createElement("option");
       o.value = p.id;
       o.textContent = `${p.label}（${p.baseUrl}）`;
-      providerSel.appendChild(o);
+      pathSel.appendChild(o);
+      const ob = document.createElement("option");
+      ob.value = p.id;
+      ob.textContent = `${p.label}（${p.baseUrl}）`;
+      browseSel.appendChild(ob);
     }
+    if (!localUser) {
+      const hint = document.createElement("option");
+      hint.value = "";
+      hint.disabled = true;
+      hint.textContent = "（登录后可配置更多 provider）";
+      pathSel.appendChild(hint);
+    }
+    if (openlist.length === 0) {
+      // 没有 OpenList provider：隐藏媒体库/路径页签（仍可用直链 / B 站）。
+      setStatus("未配置 OpenList provider：可点「添加影片」用直链或 B 站链接（登录后也可在账户设置配置 OpenList）", true);
+      return;
+    }
+    ($("#tabOpenlist") as HTMLElement).hidden = false;
+    ($("#tabPath") as HTMLElement).hidden = false;
     const browse = initBrowsePanel({
       roomId,
       getToken: () => memberToken,
       getUserToken: () => localUser?.token ?? null,
-      getProviderId: () => providerSel.value,
-      onStatus: (line, warn) => setStatus(line, warn),
+      getProviderId: () => browseSel.value,
+      onStatus: (line, warn) => {
+        setStatus(line, warn);
+        if (!warn) setAddMsg(line, false);
+      },
       onPick: (file) => {
         void (async () => {
-          setStatus(`正在添加视频: ${file.name}…`);
+          setAddMsg(`正在添加: ${file.name}…`);
           try {
             const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/media`, {
               method: "POST",
@@ -509,7 +655,7 @@ if (mode === "player" && role === "host") {
                 ...authHeaders,
                 ...(localUser ? { "X-User-Token": localUser.token } : {}),
               },
-              body: JSON.stringify({ provider: providerSel.value, path: file.path }),
+              body: JSON.stringify({ provider: browseSel.value, path: file.path }),
             });
             const body = (await res.json().catch(() => ({}))) as {
               mediaId?: string;
@@ -519,136 +665,20 @@ if (mode === "player" && role === "host") {
               error?: string;
             };
             if (!res.ok || !body.mediaId) {
-              setStatus(`添加视频失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, true);
+              setAddMsg(`添加视频失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`);
               return;
             }
-            setStatus(
-              `已注册 ${body.name}（外挂字幕 ${body.related?.length ?? 0} 个）`,
-            );
+            setAddMsg(`已注册 ${body.name}（外挂字幕 ${body.related?.length ?? 0} 个）`, true);
             await client.hostLoad(body.mediaId, { name: body.name ?? file.name, size: body.size ?? file.size });
             refreshMediaList();
           } catch (err) {
-            setStatus(`添加视频失败: ${err instanceof Error ? err.message : err}`, true);
+            setAddMsg(`添加视频失败: ${err instanceof Error ? err.message : err}`);
           }
         })();
       },
     });
-    providerSel.addEventListener("change", () => browse.reload());
+    browseSel.addEventListener("change", () => browse.reload());
   })();
-}
-
-// P4：手动添加视频（仅房主）：选择 provider → 直链填 URL / OpenList 填路径 → 注册进播放列表。
-if (mode === "player" && role === "host") {
-  const addCard = $("#addCard") as HTMLElement;
-  addCard.hidden = false;
-  const providerSel = $("#addProvider") as HTMLSelectElement;
-  const directFields = $("#directFields") as HTMLElement;
-  const biliFields = $("#biliFields") as HTMLElement;
-  const pathFields = $("#pathFields") as HTMLElement;
-
-  void (async () => {
-    const providers = await fetchMyProviders();
-    providerSel.textContent = "";
-    const optDirect = document.createElement("option");
-    optDirect.value = "direct";
-    optDirect.textContent = "直链（手动粘贴视频地址）";
-    providerSel.appendChild(optDirect);
-    const optBili = document.createElement("option");
-    optBili.value = "bilibili";
-    optBili.textContent = "B 站视频（BV 号 / 链接，免配置）";
-    providerSel.appendChild(optBili);
-    for (const p of providers) {
-      const o = document.createElement("option");
-      // 用户私有 provider：openlist 用 p:<id>（填路径），bilibili 用 bilibili:<id>（填 BV/链接）。
-      o.value = p.kind === "bilibili" ? `bilibili:${p.id}` : `p:${p.id}`;
-      o.textContent = p.kind === "bilibili"
-        ? `${p.label}（哔哩哔哩，已配置凭据）`
-        : `${p.label}（${p.baseUrl}）`;
-      providerSel.appendChild(o);
-    }
-    if (!localUser) {
-      const hint = document.createElement("option");
-      hint.value = "";
-      hint.disabled = true;
-      hint.textContent = "（登录后可配置更多 provider）";
-      providerSel.appendChild(hint);
-    }
-  })();
-
-  /** 当前 provider 形态：direct=直链 / bili=BV 或链接 / path=OpenList 路径。 */
-  function currentFieldKind(): "direct" | "bili" | "path" {
-    const v = providerSel.value;
-    if (v === "direct") return "direct";
-    if (v === "bilibili" || v.startsWith("bilibili:")) return "bili";
-    return "path";
-  }
-
-  providerSel.addEventListener("change", () => {
-    const kind = currentFieldKind();
-    directFields.hidden = kind !== "direct";
-    biliFields.hidden = kind !== "bili";
-    pathFields.hidden = kind !== "path";
-  });
-
-  $("#addBtn").addEventListener("click", () => {
-    void (async () => {
-      const value = providerSel.value;
-      let payload: Record<string, unknown>;
-      if (value === "direct") {
-        const name = ($("#addName") as HTMLInputElement).value.trim();
-        const url = ($("#addUrl") as HTMLInputElement).value.trim();
-        if (!url) {
-          setStatus("请填写直链视频地址", true);
-          return;
-        }
-        payload = { provider: "direct", name, url };
-      } else if (value === "bilibili" || value.startsWith("bilibili:")) {
-        const url = ($("#addBiliUrl") as HTMLInputElement).value.trim();
-        if (!url) {
-          setStatus("请填写 BV 号 / av 号 / bilibili 链接", true);
-          return;
-        }
-        payload = { provider: value, url };
-      } else {
-        const path = ($("#addPath") as HTMLInputElement).value.trim();
-        if (!path) {
-          setStatus("请填写 OpenList 文件路径", true);
-          return;
-        }
-        payload = { provider: value.slice(2), path };
-      }
-      setStatus("正在添加视频…");
-      try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/media`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...authHeaders,
-            ...(localUser ? { "X-User-Token": localUser.token } : {}),
-          },
-          body: JSON.stringify(payload),
-        });
-        const body = (await res.json().catch(() => ({}))) as {
-          mediaId?: string;
-          name?: string;
-          size?: number;
-          error?: string;
-        };
-        if (!res.ok || !body.mediaId) {
-          setStatus(`添加失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, true);
-          return;
-        }
-        setStatus(`已添加: ${body.name}（${body.mediaId}）`);
-        ($("#addUrl") as HTMLInputElement).value = "";
-        ($("#addPath") as HTMLInputElement).value = "";
-        ($("#addBiliUrl") as HTMLInputElement).value = "";
-        await refreshMediaList();
-        // 添加后不自动切换，房主点击播放列表条目开播。
-      } catch (err) {
-        setStatus(`添加失败: ${err instanceof Error ? err.message : err}`, true);
-      }
-    })();
-  });
 }
 
 if (mode === "player") wireControlForwarding(playerRef.current);
@@ -675,7 +705,7 @@ async function refreshMediaList(): Promise<void> {
     if (items.length === 0) {
       const d = document.createElement("div");
       d.className = "browse-empty";
-      d.textContent = role === "host" ? "（播放列表为空，用下方「添加视频」或 OpenList 媒体库）" : "（等待房主添加视频）";
+      d.textContent = role === "host" ? "（播放列表为空，点右上角「＋ 添加影片」）" : "（等待房主添加视频）";
       listEl.appendChild(d);
       return;
     }

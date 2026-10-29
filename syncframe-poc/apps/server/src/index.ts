@@ -17,7 +17,7 @@
  *  - DELETE /api/admin/users/:name (Bearer admin)      删除账户
  *  - POST /api/admin/users/:name/password (Bearer admin) 重置密码
  *  - GET  /api/rooms                                   公开房间列表（大厅）
- *  - POST /api/rooms            (Bearer userToken) {name} → {roomId, inviteCode, memberToken, ...}
+ *  - POST /api/rooms            (Bearer userToken) {name, roomId?, inviteCode?} → {roomId, inviteCode, memberToken, ...}
  *                                                    （游客 401：创建房间必须登录）
  *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}（公开，凭邀请码）
  *  - GET  /api/browse?provider=&path=&page=           列目录（仅房主本人账户 + X-User-Token）
@@ -380,9 +380,23 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, body:
     return;
   }
   const parsed = readJsonBody(body);
-  const name = typeof parsed.name === "string" ? parsed.name : "房主";
+  const name = typeof parsed.name === "string" ? parsed.name : "";
   const clientId = typeof parsed.clientId === "string" ? parsed.clientId : undefined;
-  const { room, member, hostSecret } = registry.createRoom(name, hostUser, clientId);
+  const roomIdOpt = typeof parsed.roomId === "string" && parsed.roomId.trim() ? parsed.roomId.trim() : undefined;
+  const inviteOpt = typeof parsed.inviteCode === "string" && parsed.inviteCode.trim() ? parsed.inviteCode.trim() : undefined;
+  if (!name.trim()) {
+    sendJson(res, 400, { error: "房间名不能为空" });
+    return;
+  }
+  let created: ReturnType<typeof registry.createRoom>;
+  try {
+    created = registry.createRoom(name, hostUser, clientId, { roomId: roomIdOpt, inviteCode: inviteOpt });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    sendJson(res, message.includes("已被占用") ? 409 : 400, { error: message });
+    return;
+  }
+  const { room, member, hostSecret } = created;
   sendJson(res, 200, {
     roomId: room.roomId,
     inviteCode: room.inviteCode,

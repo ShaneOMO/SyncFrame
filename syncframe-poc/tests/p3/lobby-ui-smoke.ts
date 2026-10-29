@@ -81,23 +81,26 @@ async function main(): Promise<void> {
     // 未登录：创建房间被隐藏，只能加入房间
     check("游客态隐藏创建房间表单", await host.locator("#createForm").isHidden());
     check("游客态显示登录提示", await host.locator("#createGate").isVisible());
-    // 登录管理员并在弹窗里配置 OpenList provider（指向桩）
+    // 登录管理员；登录后点用户名打开「账户设置」弹窗配置 OpenList provider（指向桩）
     await host.click("#loginBtn");
     await host.fill("#authUsername", ADMIN_USER);
     await host.fill("#authPassword", ADMIN_PASS);
     await host.click("#authSubmit");
-    await host.waitForSelector("#providerPanel:not([hidden])", { timeout: 10_000 });
-    check("登录后显示 provider 面板", true);
-    check("管理员显示账户管理面板", await host.locator("#adminPanel").isVisible());
-    await host.selectOption("#pKind", "openlist");
-    await host.fill("#pLabel", "桩");
-    await host.fill("#pBaseUrl", `http://localhost:${STUB_PORT}`);
-    await host.fill("#pUsername", "stub");
-    await host.fill("#pPassword", "stub");
-    await host.click("#pAdd");
-    await host.waitForFunction(() => document.querySelector("#providerMsg")?.textContent === "已保存", { timeout: 10_000 });
+    await host.waitForSelector("#authModal[hidden]", { state: "attached", timeout: 10_000 });
+    check("登录后回到大厅", true);
+    await host.click("#loginBtn"); // 用户名按钮 → 账户设置
+    await host.waitForSelector("#userSettingsModal:not([hidden])", { timeout: 10_000 });
+    check("账户设置弹窗打开", true);
+    check("管理员显示账户管理面板", await host.locator("[data-admin]:not([hidden])").isVisible());
+    await host.selectOption("[data-kind]", "openlist");
+    await host.fill("[data-label]", "桩");
+    await host.fill("[data-baseurl]", `http://localhost:${STUB_PORT}`);
+    await host.fill("[data-username]", "stub");
+    await host.fill("[data-password]", "stub");
+    await host.click("[data-add]");
+    await host.waitForFunction(() => document.querySelector("#userSettingsModal [data-msg]")?.textContent === "已保存", { timeout: 10_000 });
     check("添加 OpenList provider", true);
-    await host.click("#authClose");
+    await host.click("#userSettingsModal [data-close]");
     await host.fill("#createName", "UI房主");
     await host.click("#createBtn");
     await host.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
@@ -114,7 +117,10 @@ async function main(): Promise<void> {
     check("房主 WS 已连接", true);
     const invite = await host.evaluate(() => sessionStorage.getItem(`syncframe-invite-${new URL(location.href).searchParams.get("room")}`) ?? "");
     check("邀请码已存会话（6 位）", /^[A-Z2-9]{6}$/.test(invite), invite);
-    check("选片面板对房主可见", await host.locator("#browseCard").isVisible());
+    check("选片入口（添加影片）对房主可见", await host.locator("#addMediaBtn").isVisible());
+    await host.click("#addMediaBtn");
+    check("OpenList 媒体库页签可见", await host.locator("#tabOpenlist").isVisible());
+    await host.click("#tabOpenlist"); // 切到媒体库页签
     check("浏览面板含 provider 选择器", (await host.locator("#browseProvider option").allTextContents()).some((t) => t.includes("桩")));
     await host.waitForSelector("#browseList .browse-row", { timeout: 10_000 });
     check("目录列表已加载（根目录含 movies）", (await host.locator("#browseList .browse-row").allTextContents()).join(" ").includes("movies"));
@@ -139,7 +145,7 @@ async function main(): Promise<void> {
       { timeout: 15_000 },
     );
     check("观众 WS 已连接（viewer 角色）", true);
-    check("观众无选片面板", await viewer.locator("#browseCard").isHidden());
+    check("观众无添加影片入口", await viewer.locator("#addMediaBtn").isHidden());
     await sleep(800);
     const memberText = await host.locator("#members").innerText();
     check("房主看到观众成员", memberText.includes("UI观众"), memberText.replace(/\n/g, " "));
