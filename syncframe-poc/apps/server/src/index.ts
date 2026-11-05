@@ -12,6 +12,8 @@
  *  - POST /api/auth/login        {username,password} → userToken（无注册接口）
  *  - GET  /api/me                  (Bearer userToken)  当前用户（含 role）+ provider 列表（不含凭据）
  *  - PUT  /api/me/providers        (Bearer userToken)  全量替换自己的 provider 配置
+ *  - GET  /api/bilibili/login/qrcode (Bearer userToken) 申请 B 站扫码登录二维码
+ *  - GET  /api/bilibili/login/poll?qrcodeKey= (Bearer)  轮询扫码状态；确认后 SESSDATA 写入本人 bilibili provider（不回显）
  *  - GET  /api/admin/users         (Bearer admin)      账户列表（不含凭据）
  *  - POST /api/admin/users         (Bearer admin)      创建账户
  *  - DELETE /api/admin/users/:name (Bearer admin)      删除账户
@@ -50,6 +52,7 @@ import type { MemberRecord } from "./room-auth.ts";
 import { UserAccounts } from "./user-accounts.ts";
 import type { ProviderConfig } from "./user-accounts.ts";
 import { BilibiliClient, getPlayUrlCached, parseVideoId } from "./bilibili.ts";
+import { fetchNavInfo, pollQrLogin, startQrLogin } from "./bilibili-login.ts";
 
 const PORT = Number(process.env.SERVER_PORT ?? 8787);
 
@@ -260,6 +263,53 @@ function requireRoomOwner(req: IncomingMessage, res: ServerResponse, roomId: str
     return null;
   }
   return username;
+}
+
+// ── Bilibili 扫码登录（SyncTV 式绑定）：凭据只在服务端，写入用户自己的 provider 配置 ──
+
+async function handleBiliQrCode(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const username = accounts.authenticate(bearerToken(req));
+  if (!username) {
+    sendJson(res, 401, { error: "需要登录（Bearer userToken）" });
+    return;
+  }
+  try {
+    const { url, qrcodeKey } = await startQrLogin();
+    sendJson(res, 200, { url, qrcodeKey });
+  } catch (err) {
+    sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function handleBiliQrPoll(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const username = accounts.authenticate(bearerToken(req));
+  if (!username) {
+    sendJson(res, 401, { error: "需要登录（Bearer userToken）" });
+    return;
+  }
+  const qrcodeKey = (url.searchParams.get("qrcodeKey") ?? "").trim();
+  if (!qrcodeKey) {
+    sendJson(res, 400, { error: "缺少 qrcodeKey" });
+    return;
+  }
+  try {
+    const status = await pollQrLogin(qrcodeKey);
+    if (status.status !== "confirmed") {
+      sendJson(res, 200, { status: status.status });
+      return;
+    }
+    // 登录确认：SESSDATA 写入该用户自己的 bilibili provider（凭据不回显）。
+    const saved = accounts.upsertBilibiliCookie(username, status.cookie, status.uname);
+    if (!saved.ok) {
+      sendJson(res, 500, { error: saved.error });
+      return;
+    }
+    userBilibiliClients.clear();
+    console.log(`[bilibili] 用户 ${username} 扫码登录成功${status.uname ? `（${status.uname}）` : ""}`);
+    sendJson(res, 200, { status: "confirmed", uname: status.uname, provider: saved.provider });
+  } catch (err) {
+    sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 // ── 账户 / provider 配置 / 管理员 / 公开房间列表 ───────────────────────────
@@ -1030,6 +1080,10 @@ const server = createServer(async (req, res) => {
         return;
       }
       await handleLogin(req, res, await readBody(req));
+    } else if (url.pathname === "/api/bilibili/login/qrcode" && req.method === "GET") {
+      await handleBiliQrCode(req, res);
+    } else if (url.pathname === "/api/bilibili/login/poll" && req.method === "GET") {
+      await handleBiliQrPoll(req, res, url);
     } else if (url.pathname === "/api/me" && req.method === "GET") {
       handleMe(req, res);
     } else if (url.pathname === "/api/me/providers" && req.method === "PUT") {

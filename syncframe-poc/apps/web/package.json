@@ -9,7 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "movi-player": "0.4.1"
+    "movi-player": "0.4.1",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "vite": "^6.0.0"

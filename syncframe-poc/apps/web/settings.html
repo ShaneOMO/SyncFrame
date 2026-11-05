@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='5' fill='%230A0A0B' stroke='%230A84FF'/%3E%3Cpath d='M10 8.2v7.6L16 12z' fill='%230A84FF'/%3E%3C/svg%3E" />
+  <title>SyncFrame · 账户设置</title>
+  <link rel="stylesheet" href="/src/styles/tokens.css" />
+  <link rel="stylesheet" href="/src/styles/components.css" />
+  <style>
+    body { padding: 0; display: block; }
+
+    .topnav {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; gap: var(--sp-2);
+      padding: 14px 24px;
+      border-bottom: 0.5px solid var(--border);
+      background: rgba(10, 10, 11, 0.72);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+    }
+    .topnav .brand {
+      display: inline-flex; align-items: center; gap: 10px;
+      font-size: var(--fs-body); font-weight: 600; letter-spacing: 0.3px;
+      color: var(--text); text-decoration: none;
+    }
+    .topnav .brand:hover { text-decoration: none; opacity: 0.85; }
+    .topnav .brand .logo-mark { color: var(--accent); display: inline-flex; }
+    .topnav nav { margin-left: auto; display: flex; align-items: center; gap: var(--sp-4); }
+    .nav-back { width: auto; margin-top: 0; padding: 6px 14px; display: inline-flex; align-items: center; gap: 6px; font-weight: 500; font-size: var(--fs-small); }
+
+    /* ── 布局：左侧导航 + 右侧内容 ── */
+    .layout {
+      display: grid; grid-template-columns: 220px minmax(0, 1fr);
+      gap: var(--sp-6);
+      max-width: var(--container); margin: 0 auto;
+      padding: var(--sp-6) 24px var(--sp-8);
+    }
+    @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+
+    .side { display: flex; flex-direction: column; gap: var(--sp-2); align-self: start; position: sticky; top: 76px; }
+    @media (max-width: 760px) { .side { position: static; flex-direction: row; overflow-x: auto; } }
+
+    .side .me-card {
+      border: 0.5px solid var(--border); border-radius: var(--radius-lg);
+      background: var(--panel); padding: var(--sp-4);
+      display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-2);
+    }
+    .me-card .avatar {
+      width: 34px; height: 34px; border-radius: 50%; flex: 0 0 auto;
+      background: var(--accent-soft); color: var(--accent);
+      display: inline-flex; align-items: center; justify-content: center; font-weight: 600;
+    }
+    .me-card .who { min-width: 0; }
+    .me-card .who b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .me-card .who span { color: var(--text-faint); font-size: var(--fs-caption); }
+
+    .side-nav { display: flex; flex-direction: column; gap: 2px; }
+    @media (max-width: 760px) { .side-nav { flex-direction: row; } }
+    .side-nav button {
+      justify-content: flex-start; width: 100%;
+      background: transparent; border-color: transparent; color: var(--text-dim);
+      padding: 8px 12px; font-weight: 500;
+    }
+    .side-nav button:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
+    .side-nav button.active { background: var(--accent-soft); color: var(--accent); }
+    @media (max-width: 760px) { .side-nav button { width: auto; white-space: nowrap; } }
+
+    .side .logout { margin-top: var(--sp-4); width: 100%; }
+    @media (max-width: 760px) { .side .logout { width: auto; margin-top: 0; margin-left: auto; } }
+
+    /* ── 内容区 ── */
+    .pane-head { margin-bottom: var(--sp-5); }
+    .pane-head h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; margin: 0 0 var(--sp-2); }
+    .pane-head p { color: var(--text-dim); font-size: var(--fs-small); margin: 0; line-height: 1.7; }
+
+    .section-title {
+      font-size: var(--fs-caption); font-weight: 600; color: var(--text-dim);
+      letter-spacing: 0.4px; text-transform: uppercase;
+      margin: var(--sp-5) 0 var(--sp-3);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .section-title:first-child { margin-top: 0; }
+
+    /* ── Provider 卡片网格 ── */
+    .provider-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: var(--sp-3);
+    }
+    .provider-card {
+      border: 0.5px solid var(--border); border-radius: var(--radius-lg);
+      background: var(--panel); padding: var(--sp-4);
+      display: flex; flex-direction: column; gap: var(--sp-2);
+      transition: border-color var(--dur) var(--ease);
+    }
+    .provider-card:hover { border-color: var(--border-strong); }
+    .provider-card .top { display: flex; align-items: center; gap: var(--sp-2); }
+    .provider-card .kind {
+      font-size: 11px; color: var(--text-dim);
+      border: 0.5px solid var(--border); border-radius: var(--radius-pill); padding: 1px 8px;
+    }
+    .provider-card b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .provider-card .meta { color: var(--text-faint); font-size: var(--fs-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .provider-card .actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-1); }
+    .provider-card .actions button { padding: 3px 12px; font-size: var(--fs-caption); }
+
+    .browse-empty { padding: 22px; text-align: center; color: var(--text-faint); font-size: var(--fs-small); }
+
+    /* ── 添加 provider 表单 ── */
+    .add-form {
+      border: 0.5px solid var(--border); border-radius: var(--radius-lg);
+      background: var(--panel); padding: var(--sp-5);
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .add-form select, .add-form input { width: 100%; }
+    .add-form button { margin-top: 2px; align-self: flex-start; }
+    .provider-hint { color: var(--text-faint); font-size: var(--fs-caption); margin: var(--sp-2) 0 0; line-height: 1.6; }
+
+    /* ── 管理员：账户表 ── */
+    .table-wrap { border: 0.5px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+    .table-wrap .sf-table td:last-child { text-align: right; white-space: nowrap; }
+    .table-wrap .sf-table button { padding: 3px 12px; font-size: var(--fs-caption); }
+    .table-wrap .sf-table button + button { margin-left: var(--sp-2); }
+    .role-tag {
+      font-size: 11px; border-radius: var(--radius-pill); padding: 1px 8px;
+      border: 0.5px solid var(--border); color: var(--text-dim);
+    }
+    .role-tag.admin { color: var(--warning); border-color: var(--warning-border); }
+
+    .msg { min-height: 18px; font-size: var(--fs-caption); color: var(--warning); margin: var(--sp-3) 0 0; }
+    .msg.ok { color: var(--success); }
+  </style>
+</head>
+<body>
+  <header class="topnav">
+    <a class="brand" href="/lobby.html" aria-label="返回大厅">
+      <svg class="logo-mark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="20" rx="5"/><path d="M10 8.2v7.6L16 12z" fill="currentColor" stroke="none"/>
+      </svg>
+      SyncFrame
+    </a>
+    <nav>
+      <a class="nav-back" href="/lobby.html">← 返回大厅</a>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <aside class="side">
+      <div class="me-card">
+        <span class="avatar" data-avatar>?</span>
+        <div class="who">
+          <b data-who>…</b>
+          <span data-role>加载中</span>
+        </div>
+      </div>
+      <div class="side-nav" role="tablist">
+        <button data-nav="providers" class="active"><svg class="ic"><use href="#i-video"/></svg>视频 Provider</button>
+        <button data-nav="users" hidden><svg class="ic"><use href="#i-users"/></svg>用户管理</button>
+      </div>
+      <button class="danger logout" data-logout>退出登录</button>
+    </aside>
+
+    <main>
+      <!-- 个人：视频 provider 管理 -->
+      <section data-pane="providers">
+        <div class="pane-head">
+          <h1>视频 Provider</h1>
+          <p>管理你自己的 OpenList 网盘与哔哩哔哩凭据；凭据只存服务端，创建房间后即可在「添加影片」里浏览媒体库。</p>
+        </div>
+
+        <h2 class="section-title">已配置（<span data-provider-count>0</span>）</h2>
+        <div data-provider-list></div>
+
+        <h2 class="section-title">添加 provider</h2>
+        <div class="add-form">
+          <select data-kind>
+            <option value="openlist">OpenList（自建网盘）</option>
+            <option value="bilibili">哔哩哔哩（可选 SESSDATA，画质更高）</option>
+          </select>
+          <div data-openlist-fields>
+            <input data-label type="text" maxlength="24" placeholder="名称（如：家里 OpenList）" />
+            <input data-baseurl type="text" placeholder="https://openlist.example.com" />
+            <input data-username type="text" maxlength="64" placeholder="OpenList 用户名" autocomplete="off" />
+            <input data-password type="password" maxlength="64" placeholder="OpenList 密码" autocomplete="new-password" />
+          </div>
+          <div data-bilibili-fields hidden>
+            <input data-bililabel type="text" maxlength="24" placeholder="名称（如：我的 B 站）" />
+            <input data-bilicookie type="text" placeholder="SESSDATA cookie（可选，留空则匿名；推荐扫码登录）" autocomplete="off" />
+            <div class="bili-login">
+              <button data-bili-qr type="button">扫码登录 B 站</button>
+              <canvas data-bili-qr-canvas width="180" height="180" hidden></canvas>
+              <p class="provider-hint" data-bili-qr-status></p>
+            </div>
+          </div>
+          <button data-add class="primary">添加 provider</button>
+          <p class="provider-hint">「直链」「B 站视频」无需配置：在房间里点「添加影片」直接粘贴地址 / BV 号即可。</p>
+        </div>
+        <p class="msg" data-msg role="status" aria-live="polite"></p>
+      </section>
+
+      <!-- 管理员：用户管理 -->
+      <section data-pane="users" hidden>
+        <div class="pane-head">
+          <h1>用户管理</h1>
+          <p>创建、删除账户或重置密码；被删除用户的会话与凭据立即失效，重置密码后需重新登录。</p>
+        </div>
+
+        <h2 class="section-title">全部账户</h2>
+        <div class="table-wrap">
+          <table class="sf-table">
+            <thead>
+              <tr><th>用户名</th><th>角色</th><th>Provider</th><th></th></tr>
+            </thead>
+            <tbody data-admin-list></tbody>
+          </table>
+        </div>
+
+        <h2 class="section-title">创建账户</h2>
+        <div class="add-form">
+          <input data-new-username type="text" maxlength="24" placeholder="新用户名（2-24 位字母数字/下划线/横线）" autocomplete="off" />
+          <input data-new-password type="password" maxlength="64" placeholder="密码（至少 8 位）" autocomplete="new-password" />
+          <button data-create-user class="primary">创建账户</button>
+        </div>
+        <p class="msg" data-admin-msg role="status" aria-live="polite"></p>
+      </section>
+    </main>
+  </div>
+
+  <!-- 图标 sprite（与 src/icons.ts 的路径定义保持一致） -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-video" viewBox="0 0 24 24"><path d="m16 13 5.2 3.1V7.9L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/></symbol>
+      <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></symbol>
+      <symbol id="i-key" viewBox="0 0 24 24"><path d="m21 2-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></symbol>
+    </defs>
+  </svg>
+
+  <script type="module" src="/src/settings-main.ts"></script>
+</body>
+</html>

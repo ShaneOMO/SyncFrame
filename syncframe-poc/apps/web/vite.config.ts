@@ -22,6 +22,7 @@ export default defineConfig({
         index: resolve(__dirname, "index.html"),
         lobby: resolve(__dirname, "lobby.html"),
         room: resolve(__dirname, "room.html"),
+        settings: resolve(__dirname, "settings.html"),
       },
     },
   },

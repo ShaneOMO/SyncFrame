@@ -262,8 +262,32 @@ export class UserAccounts {
     return { ok: true };
   }
 
-  /** 对外展示形态（不含密码/cookie 等凭据）。 */
-  listProviders(username: string): PublicProvider[] {
+  /**
+   * 扫码登录成功后写入凭据：更新该用户第一个 bilibili provider 的 cookie，
+   * 没有则新建一个（label = "哔哩哔哩" 或 "哔哩哔哩·<昵称>"）。
+   * cookie 只存服务端；返回 provider 的公开形态（不含 cookie）。
+   */
+  upsertBilibiliCookie(username: string, cookie: string, uname?: string): { ok: true; provider: PublicProvider } | { ok: false; error: string } {
+    const user = this.users.get(username);
+    if (!user) return { ok: false, error: "用户不存在" };
+    if (!/SESSDATA=/.test(cookie)) return { ok: false, error: "凭据缺少 SESSDATA" };
+    const existing = [...user.providers.values()].find((p) => p.kind === "bilibili");
+    if (existing && existing.kind === "bilibili") {
+      existing.cookie = cookie;
+    } else {
+      const id = randomBytes(6).toString("base64url");
+      user.providers.set(id, {
+        id,
+        kind: "bilibili",
+        label: `哔哩哔哩${uname ? `·${uname}`.slice(0, 24) : ""}`,
+        cookie,
+      });
+    }
+    this.save();
+    return { ok: true, provider: this.listProviders(username).find((p) => p.kind === "bilibili")! };
+  }
+
+  /** 对外展示形态（不含密码/cookie 等凭据）。 */  listProviders(username: string): PublicProvider[] {
     const user = this.users.get(username);
     if (!user) return [];
     return [...user.providers.values()].map((p) => {
