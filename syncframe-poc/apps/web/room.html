@@ -150,21 +150,28 @@
     }
     .modal[hidden] { display: none; }
     .modal-card {
-      width: 100%; max-width: 460px; background: var(--panel);
+      width: 100%; max-width: 720px; background: var(--panel);
       border: 0.5px solid var(--border-strong); border-radius: var(--radius-lg);
       padding: var(--sp-5); box-shadow: var(--shadow-pop);
       max-height: 84vh; overflow-y: auto;
     }
-    .modal-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+    .modal-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-4); }
     .modal-head h2 { font-size: var(--fs-title); flex: 1; }
     .modal-head button.icon { width: 30px; height: 30px; padding: 0; margin-top: 0; }
+    /* 弹窗主体：左侧竖排方式列表 + 右侧编辑内容 */
+    .add-body { display: flex; gap: var(--sp-5); align-items: stretch; }
     .tabs {
-      display: flex; gap: var(--sp-1); padding: 3px;
-      background: var(--panel-2); border-radius: var(--radius-pill);
-      margin-bottom: var(--sp-4);
+      display: flex; flex-direction: column; gap: 2px; flex: 0 0 132px;
+      padding: var(--sp-2); background: var(--panel-2); border-radius: var(--radius);
     }
-    .tab { flex: 1; margin-top: 0; padding: 6px 0; font-weight: 500; font-size: var(--fs-small); border: 0; background: transparent; }
+    .tab {
+      margin-top: 0; padding: 9px 12px; font-weight: 500; font-size: var(--fs-small);
+      border: 0; background: transparent; border-radius: var(--radius-sm); text-align: left;
+      color: var(--text-dim); white-space: nowrap;
+    }
+    .tab:hover { color: var(--text); background: var(--panel-hover); }
     .tab.active { background: var(--panel-hover); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
+    .add-content { flex: 1; min-width: 0; }
     .add-pane select, .add-pane input { width: 100%; }
     .add-pane .pane-add { width: 100%; margin-top: var(--sp-3); }
     #addMediaMsg { min-height: 18px; font-size: var(--fs-caption); color: var(--warning); margin: var(--sp-2) 0 0; }
@@ -190,6 +197,10 @@
     #inviteLink { flex: 1; min-width: 220px; font-size: var(--fs-caption); }
     #inviteRow button { padding: 5px 14px; }
     @media (max-width: 560px) {
+      /* 添加影片弹窗：小屏下回到顶部横排页签 */
+      .add-body { flex-direction: column; gap: var(--sp-3); }
+      .tabs { flex-direction: row; flex: 0 0 auto; border-radius: var(--radius-pill); }
+      .tab { flex: 1; text-align: center; padding: 6px 0; white-space: normal; }
       #inviteRow button { padding: 9px 16px; }
       body { padding: 0 12px var(--sp-6); }
       /* 顶栏收紧：隐藏副标题、减小内边距与间距，避免小屏下占满首屏 */
@@ -292,13 +303,15 @@
         <h2>添加影片</h2>
         <button id="addMediaClose" class="icon ghost" aria-label="关闭">✕</button>
       </div>
-      <div class="tabs" id="addMediaTabs">
-        <button class="tab active" data-tab="direct">直链</button>
-        <button class="tab" data-tab="bili">B 站链接</button>
-        <button class="tab" data-tab="openlist" id="tabOpenlist" hidden>OpenList 媒体库</button>
-        <button class="tab" data-tab="path" id="tabPath" hidden>OpenList 路径</button>
-      </div>
+      <div class="add-body">
+        <div class="tabs" id="addMediaTabs" role="tablist" aria-label="添加方式">
+          <button class="tab active" data-tab="direct" role="tab">直链</button>
+          <button class="tab" data-tab="bili" role="tab">B 站链接</button>
+          <button class="tab" data-tab="openlist" id="tabOpenlist" role="tab" hidden>OpenList 媒体库</button>
+          <button class="tab" data-tab="path" id="tabPath" role="tab" hidden>OpenList 路径</button>
+        </div>
 
+        <div class="add-content">
       <div class="add-pane" data-pane="direct">
         <input type="text" id="addName" placeholder="视频名称（可选）" maxlength="128" />
         <input type="text" id="addUrl" placeholder="直链视频地址（http/https）" style="margin-top:6px" />
@@ -307,7 +320,7 @@
 
       <div class="add-pane" data-pane="bili" hidden>
         <select id="biliProviderSel" aria-label="B 站来源"></select>
-        <input type="text" id="addBiliUrl" placeholder="B 站视频：BV 号 / av 号 / bilibili 链接" style="margin-top:6px" />
+        <input type="text" id="addBiliUrl" placeholder="B 站视频：BV 号 / av 号 / 视频或番剧（ep/ss）链接" style="margin-top:6px" />
         <button id="addBiliBtn" class="primary pane-add">添加到播放列表</button>
       </div>
 
@@ -322,14 +335,16 @@
           <select id="browseProvider" style="flex:1 1 180px" aria-label="选择 OpenList provider"></select>
         </div>
         <div class="row" style="margin-top:var(--sp-2)">
-          <button id="browseUp" title="上级目录" aria-label="上级目录" class="icon" style="width:32px;height:32px"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
+          <button id="browseUp" title="上级目录" aria-label="上级目录" class="icon" style="width:32px;height:32px;flex:0 0 auto"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
           <input type="text" id="browsePath" value="/" aria-label="目录路径" />
           <button id="browseGo">进入</button>
-          <input type="text" id="browseSearch" placeholder="搜索文件名…" aria-label="搜索文件名" style="min-width:130px;flex:0 1 200px" />
+        </div>
+        <div class="row" style="margin-top:var(--sp-2)">
+          <input type="text" id="browseSearch" placeholder="搜索文件名…" aria-label="搜索文件名" style="flex:1;min-width:0" />
           <button id="browseSearchBtn">搜索</button>
           <span class="spacer"></span>
           <button id="browsePrev">上一页</button>
-          <span id="browsePageInfo" style="color:var(--text-dim);font-size:12px"></span>
+          <span id="browsePageInfo" style="color:var(--text-dim);font-size:12px;align-self:center"></span>
           <button id="browseNext">下一页</button>
         </div>
         <div id="browseList"></div>
@@ -337,6 +352,8 @@
 
       <p id="addMediaMsg" role="status" aria-live="polite"></p>
       <p class="add-hint">需要添加 OpenList / B 站凭据？<button id="addMediaSettings" type="button">点击打开账户设置</button>（也可点顶栏自己的昵称）</p>
+        </div>
+      </div>
     </div>
   </div>
 
