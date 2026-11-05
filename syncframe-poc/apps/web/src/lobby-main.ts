@@ -1,8 +1,11 @@
 /**
  * 大厅页：
- * - 房间列表：GET /api/rooms 展示本实例活跃房间（房间号/房主/人数/视频数），点击房间号填入加入表单；
+ * - 房间列表：GET /api/rooms 展示本实例同步房间（房间号/房主/人数/视频数），行右侧「直接加入」
+ *   弹出加入弹窗并预填房间号；
+ * - 顶部「创建房间 / 加入房间」按钮：分别弹出创建 / 加入设置弹窗；
  * - 右上角用户按钮：未登录 → 登录弹窗（仅登录，注册已关闭，账户由管理员创建）；
- *   已登录 → 「账户设置」弹窗（provider 管理 / 管理员账户面板，见 user-settings.ts）；
+ *   已登录 → 跳转 /settings.html 账户设置页（provider 管理 / 管理员用户管理）；
+ * - 管理员在顶栏额外拥有「用户管理」入口（直达设置页 #users 页签）；
  * - 创建房间：必须登录 + 房间名必填；房间号与邀请码可自定义（固定房间长期使用）；
  * - 权限模型：游客只能凭邀请码加入房间；管理员额外拥有账户管理面板。
  *
@@ -11,7 +14,6 @@
  */
 
 import { saveSession } from "./session.ts";
-import { openUserSettings } from "./user-settings.ts";
 
 const $ = <T extends HTMLElement>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -23,6 +25,48 @@ const msgEl = $("#msg");
 function msg(text: string): void {
   msgEl.textContent = text;
 }
+
+// ── 创建 / 加入弹窗 ───────────────────────────────────────
+
+/** 弹窗开关：点击遮罩或关闭按钮均可关闭。 */
+function bindModal(modal: HTMLElement, closeBtn: HTMLElement): void {
+  closeBtn.addEventListener("click", () => {
+    modal.hidden = true;
+  });
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.hidden = true;
+  });
+}
+
+const createModal = $("#createModal") as HTMLElement;
+const joinModal = $("#joinModal") as HTMLElement;
+bindModal(createModal, $("#createClose"));
+bindModal(joinModal, $("#joinClose"));
+
+function openCreateModal(): void {
+  $("#createMsg").textContent = "";
+  createModal.hidden = false;
+  ($("#createName") as HTMLInputElement).focus();
+}
+
+/** 打开加入弹窗；roomId 存在则预填并聚焦邀请码。 */
+function openJoinModal(roomId?: string): void {
+  $("#joinMsg").textContent = "";
+  if (roomId !== undefined) ($("#joinRoom") as HTMLInputElement).value = roomId;
+  joinModal.hidden = false;
+  (roomId ? $("#joinCode") : $("#joinRoom")).focus();
+}
+
+$("#openCreateBtn").addEventListener("click", openCreateModal);
+$("#openJoinBtn").addEventListener("click", () => openJoinModal());
+
+/** 弹窗内回车直接提交对应表单。 */
+$("#createForm").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !(e.target as HTMLElement).closest("button")) $("#createBtn").click();
+});
+joinModal.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !(e.target as HTMLElement).closest("button")) $("#joinBtn").click();
+});
 
 /** 从 URL 预填（房间页把用户带回大厅时携带 ?room=&expired=1；邀请链接携带 ?room=&key=）。 */
 const params = new URLSearchParams(location.search);
@@ -60,16 +104,18 @@ function enterRoom(
 }
 
 $("#createBtn").addEventListener("click", async () => {
-  msg("");
+  const createMsg = $("#createMsg");
+  createMsg.textContent = "";
   if (!user) {
-    msg("创建房间需要先登录（右上角「登录」）；游客可凭邀请码加入房间");
+    createMsg.textContent = "创建房间需要先登录（右上角「登录」）；游客可凭邀请码加入房间";
+    createModal.hidden = true;
     openModal();
     return;
   }
   // 房间名必填（服务端同样校验，空名直接 400）。
   const name = ($("#createName") as HTMLInputElement).value.trim();
   if (!name) {
-    msg("请填写房间名");
+    createMsg.textContent = "请填写房间名";
     ($("#createName") as HTMLInputElement).focus();
     return;
   }
@@ -86,19 +132,20 @@ $("#createBtn").addEventListener("click", async () => {
     sessionStorage.setItem(`syncframe-hostsecret-${newRoomId}`, String(data.hostSecret));
     enterRoom(newRoomId, data, name);
   } catch (err) {
-    msg(`创建失败：${err instanceof Error ? err.message : err}`);
+    createMsg.textContent = `创建失败：${err instanceof Error ? err.message : err}`;
   } finally {
     btn.disabled = false;
   }
 });
 
 $("#joinBtn").addEventListener("click", async () => {
-  msg("");
+  const joinMsg = $("#joinMsg");
+  joinMsg.textContent = "";
   const roomId = ($("#joinRoom") as HTMLInputElement).value.trim();
   const code = ($("#joinCode") as HTMLInputElement).value.trim().toUpperCase();
   const name = ($("#joinName") as HTMLInputElement).value.trim() || "Guest";
   if (!roomId || !code) {
-    msg("请填写房间号和邀请码");
+    joinMsg.textContent = "请填写房间号和邀请码";
     return;
   }
   const btn = $("#joinBtn") as HTMLButtonElement;
@@ -113,7 +160,7 @@ $("#joinBtn").addEventListener("click", async () => {
     });
     enterRoom(roomId, data, name);
   } catch (err) {
-    msg(`加入失败：${err instanceof Error ? err.message : err}`);
+    joinMsg.textContent = `加入失败：${err instanceof Error ? err.message : err}`;
   } finally {
     btn.disabled = false;
   }
@@ -157,15 +204,9 @@ async function refreshRoomList(): Promise<void> {
     for (const r of rooms) {
       const row = document.createElement("div");
       row.className = "room-row";
-      const idBtn = document.createElement("button");
-      idBtn.className = "room-id";
-      idBtn.textContent = r.roomId;
-      idBtn.title = "点击填入下方房间号";
-      idBtn.addEventListener("click", () => {
-        ($("#joinRoom") as HTMLInputElement).value = r.roomId;
-        $("#joinRoom").scrollIntoView({ behavior: "smooth", block: "center" });
-        msg(`已填入房间号 ${r.roomId}，请输入邀请码加入`);
-      });
+      const idEl = document.createElement("span");
+      idEl.className = "room-id";
+      idEl.textContent = r.roomId;
       const host = document.createElement("span");
       host.className = "room-host";
       host.textContent = r.hostName;
@@ -174,7 +215,12 @@ async function refreshRoomList(): Promise<void> {
       meta.innerHTML = `<span></span><span class="dot">·</span><span></span>`;
       meta.querySelectorAll("span")[0].textContent = `${r.memberCount} 人在线`;
       meta.querySelectorAll("span")[2].textContent = `${r.mediaCount} 个视频`;
-      row.append(idBtn, host, meta);
+      // 右侧「直接加入」：弹出加入弹窗并预填房间号，只需输入邀请码。
+      const joinBtn = document.createElement("button");
+      joinBtn.className = "primary room-join";
+      joinBtn.textContent = "直接加入";
+      joinBtn.addEventListener("click", () => openJoinModal(r.roomId));
+      row.append(idEl, host, meta, joinBtn);
       listEl.appendChild(row);
     }
   } catch {
@@ -224,27 +270,32 @@ function renderCreateGate(): void {
   ($("#createForm") as HTMLElement).hidden = !user;
 }
 
-/** 顶栏用户按钮文案与创建入口（provider 管理在 user-settings.ts 的账户设置弹窗）。 */
+/** 顶栏用户按钮文案与创建入口（provider 管理在 settings.html 账户设置页）。 */
 async function refreshAuthState(): Promise<void> {
   const btnText = $("#loginBtnText");
+  const adminBtn = $("#adminBtn") as HTMLElement;
   if (!user) {
     btnText.textContent = "登录";
+    adminBtn.hidden = true;
     renderCreateGate();
     return;
   }
   try {
     const res = await fetch("/api/me", { headers: userHeaders() });
     if (!res.ok) throw new Error("expired");
-    const body = (await res.json()) as { username: string };
+    const body = (await res.json()) as { username: string; role?: string };
     user.username = body.username;
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     btnText.textContent = body.username;
+    // 管理员专属入口：直达设置页「用户管理」页签。
+    adminBtn.hidden = body.role !== "admin";
     renderCreateGate();
   } catch {
     // 服务端重启等导致令牌失效：清理本地状态回登录态。
     user = null;
     localStorage.removeItem(USER_KEY);
     btnText.textContent = "登录";
+    adminBtn.hidden = true;
     renderCreateGate();
   }
 }
@@ -256,19 +307,14 @@ function closeModal(): void {
   authModal.hidden = true;
 }
 
-/** 顶栏用户按钮：未登录 → 登录弹窗；已登录 → 账户设置（provider 管理）。 */
+/** 顶栏用户按钮：未登录 → 登录弹窗；已登录 → 账户设置页（provider 管理）。 */
 $("#loginBtn").addEventListener("click", () => {
-  if (user) {
-    void openUserSettings().then((ok) => {
-      if (!ok) {
-        user = null;
-        void refreshAuthState();
-        openModal();
-      }
-    });
-  } else {
-    openModal();
-  }
+  if (user) location.href = "/settings.html";
+  else openModal();
+});
+// 管理员专属入口：直达账户设置页「用户管理」页签。
+$("#adminBtn").addEventListener("click", () => {
+  location.href = "/settings.html#users";
 });
 $("#authClose").addEventListener("click", closeModal);
 authModal.addEventListener("click", (e) => {
@@ -288,7 +334,7 @@ $("#authSubmit").addEventListener("click", async () => {
     ($("#authPassword") as HTMLInputElement).value = "";
     closeModal();
     await refreshAuthState();
-    msg(`已登录 ${user.username}；点击右上角用户名可管理视频 provider`);
+    msg(`已登录 ${user.username}；点击右上角用户名可管理视频 provider（OpenList / B 站凭据）`);
   } catch (err) {
     msgEl2.textContent = err instanceof Error ? err.message : String(err);
   }

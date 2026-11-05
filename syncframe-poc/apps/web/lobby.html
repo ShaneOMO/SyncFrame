@@ -90,7 +90,7 @@
     }
     .room-row {
       display: grid;
-      grid-template-columns: minmax(110px, auto) minmax(0, 1fr) auto;
+      grid-template-columns: 200px minmax(0, 1fr) auto auto;
       align-items: center;
       gap: var(--sp-4);
       padding: 16px var(--sp-5);
@@ -101,30 +101,32 @@
     .room-row:last-child { border-bottom: 0; }
     .room-id {
       font-family: var(--font-mono); font-weight: 600; font-size: var(--fs-title); color: var(--accent);
-      cursor: pointer; background: none; border: 0; padding: 4px 10px; margin: -4px 0;
-      border-radius: 8px; text-align: left;
-      transition: background var(--dur) var(--ease);
+      padding: 4px 10px; margin: -4px 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .room-id:hover { background: var(--accent-soft); text-decoration: none; }
-    .room-host { color: var(--text); font-size: var(--fs-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .room-host {
+      color: var(--text);
+      font-family: var(--font-mono); font-weight: 600; font-size: var(--fs-title);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     .room-meta { color: var(--text-dim); font-size: var(--fs-caption); flex: 0 0 auto; text-align: right; line-height: 1.6; }
     .room-meta .dot { color: var(--text-faint); margin: 0 4px; }
     .browse-empty { padding: 22px; text-align: center; color: var(--text-faint); font-size: var(--fs-small); }
     #refreshRooms { width: auto; margin-top: var(--sp-3); padding: 5px 14px; display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); }
     #refreshRooms .ic { width: 13px; height: 13px; }
 
-    /* ── 创建 / 加入并排两列 ── */
-    .forms-grid {
-      display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-5);
-      align-items: start;
-    }
-    .forms-grid .card { margin: 0; }
-    @media (max-width: 760px) { .forms-grid { grid-template-columns: 1fr; } }
+    /* ── 顶栏行动按钮：创建 / 加入 ── */
+    .hero-actions { display: flex; justify-content: center; gap: var(--sp-3); margin: calc(-1 * var(--sp-6)) 0 var(--sp-8); }
+    .hero-actions button { width: auto; margin-top: 0; padding: 10px 22px; display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+    .hero-actions button .ic { width: 16px; height: 16px; }
 
     /* ── 登录按钮（顶栏） ── */
     .nav-login { width: auto; margin-top: 0; padding: 6px 14px; display: inline-flex; align-items: center; gap: 6px; font-weight: 500; font-size: var(--fs-small); }
     .nav-login .ic { width: 14px; height: 14px; }
+
+    /* 房间行右侧「直接加入」 */
+    .room-join { width: auto; margin-top: 0; padding: 6px 16px; font-size: var(--fs-small); font-weight: 600; flex: 0 0 auto; }
+    @media (max-width: 560px) { .room-join { grid-column: 1 / -1; } }
 
     /* ── 弹窗 ── */
     .modal {
@@ -144,16 +146,15 @@
     .modal-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-4); }
     .modal-head h2 { font-size: var(--fs-title); display: flex; align-items: center; gap: var(--sp-2); flex: 1; }
     .modal-head button.icon { width: 30px; height: 30px; padding: 0; margin-top: 0; }
-    #authSubmit { width: 100%; margin-top: var(--sp-4); }
+    #authSubmit, #createBtn, #joinBtn { width: 100%; margin-top: var(--sp-4); }
     #authMsg { min-height: 18px; font-size: var(--fs-caption); color: var(--warning); margin: var(--sp-2) 0 0; }
 
-    /* 账户设置弹窗（user-settings.ts 动态创建） */
-    .settings-h { font-size: var(--fs-caption); font-weight: 600; color: var(--text-dim); letter-spacing: 0.4px; text-transform: uppercase; display: flex; align-items: center; gap: 6px; margin: var(--sp-5) 0 var(--sp-2); }
+    /* 登录弹窗 */
 
     @media (max-width: 560px) {
       main { padding-top: var(--sp-8); }
       .hero h1 { font-size: 26px; }
-      .room-row { grid-template-columns: minmax(70px, auto) minmax(0, 1fr); }
+      .room-row { grid-template-columns: 140px minmax(0, 1fr); }
       .room-meta { grid-column: 1 / -1; text-align: left; }
     }
   </style>
@@ -167,11 +168,12 @@
       <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></symbol>
       <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></symbol>
       <symbol id="i-video" viewBox="0 0 24 24"><path d="m16 13 5.2 3.1V7.9L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/></symbol>
+      <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
       <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
     </defs>
   </svg>
 
-  <!-- 登录弹窗（provider 管理在登录后点击用户名打开的「账户设置」弹窗中） -->
+  <!-- 登录弹窗（登录后点击右上角用户名进入 /settings.html 账户设置页管理 provider） -->
   <div id="authModal" class="modal" hidden>
     <div class="modal-card" role="dialog" aria-modal="true" aria-label="登录账户">
       <div class="modal-head">
@@ -199,6 +201,7 @@
       SyncFrame
     </a>
     <nav>
+      <button id="adminBtn" class="ghost nav-login" hidden><svg class="ic"><use href="#i-users"/></svg><span>用户管理</span></button>
       <button id="loginBtn" class="ghost nav-login"><svg class="ic"><use href="#i-user"/></svg><span id="loginBtnText">登录</span></button>
     </nav>
   </header>
@@ -211,41 +214,18 @@
       <p class="sub">创建一个房间，把链接发给朋友；点开即进房，播放、暂停、进度完全同步。</p>
     </div>
 
+    <!-- 顶部行动按钮：创建 / 加入均弹出设置 -->
+    <div class="hero-actions">
+      <button id="openCreateBtn" class="primary"><svg class="ic"><use href="#i-plus"/></svg>创建房间</button>
+      <button id="openJoinBtn" class="ghost"><svg class="ic"><use href="#i-log-in"/></svg>加入房间</button>
+    </div>
+
     <!-- 当前实例已有的同步房间 -->
     <div class="card" id="roomListCard">
       <h2><svg class="ic"><use href="#i-video"/></svg>同步房间 <span class="room-count" id="roomCount"></span></h2>
-      <p class="desc">本实例当前活跃的房间；游客凭邀请码加入，点击房间号可快速填入下方加入表单。</p>
+      <p class="desc">本实例当前活跃的同步房间；点右侧「直接加入」，输入邀请码即可进房。</p>
       <div id="roomList"><div class="browse-empty">加载中…</div></div>
       <button id="refreshRooms" class="ghost small"><svg class="ic"><use href="#i-refresh"/></svg>刷新</button>
-    </div>
-
-    <div class="forms-grid">
-      <div class="card" id="createCard">
-        <h2><svg class="ic"><use href="#i-plus"/></svg>创建房间 <span class="room-count">需登录</span></h2>
-        <p class="desc">成为房主：添加直链 / B 站 / OpenList 影片，统一控制播放、暂停、进度与倍速。</p>
-        <div id="createGate" class="browse-empty" hidden>登录后即可创建房间（右上角「登录」）</div>
-        <div id="createForm">
-          <label for="createName">房间名（必填，会展示在房间列表）</label>
-          <input id="createName" type="text" maxlength="24" placeholder="例如：周末电影夜" autocomplete="off" />
-          <label for="createRoomId">房间号 <span class="opt">（可选，3-24 位字母/数字/连字符，长期使用固定房间）</span></label>
-          <input id="createRoomId" type="text" maxlength="24" placeholder="留空则自动生成" autocomplete="off" />
-          <label for="createInvite">邀请码 <span class="opt">（可选，4-16 位字母/数字）</span></label>
-          <input id="createInvite" type="text" maxlength="16" placeholder="留空则自动生成" autocomplete="off" />
-          <button id="createBtn" class="primary" aria-label="创建房间并成为房主">创建房间</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2><svg class="ic"><use href="#i-log-in"/></svg>加入房间</h2>
-        <p class="desc">通常不需要来这里——直接点开房主分享的链接即可自动进房。</p>
-        <label for="joinRoom">房间号</label>
-        <input id="joinRoom" type="text" maxlength="24" placeholder="例如：movie-night" autocomplete="off" />
-        <label for="joinCode">邀请码（链接打不开时手动输入）</label>
-        <input id="joinCode" type="text" maxlength="16" placeholder="邀请码" autocomplete="off" />
-        <label for="joinName">你的昵称</label>
-        <input id="joinName" type="text" maxlength="24" placeholder="例如：小红" autocomplete="nickname" />
-        <button id="joinBtn" class="join" aria-label="凭房间号和邀请码加入房间">加入房间</button>
-      </div>
     </div>
 
     <p id="msg" role="status" aria-live="polite"></p>
@@ -255,6 +235,47 @@
       房间成员令牌存于会话存储，过期后自动回到本页重新加入。
     </p>
   </main>
+
+  <!-- 创建房间弹窗（原创建表单改为弹窗设置） -->
+  <div id="createModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="创建房间">
+      <div class="modal-head">
+        <h2><svg class="ic"><use href="#i-plus"/></svg>创建房间 <span class="room-count">需登录</span></h2>
+        <button id="createClose" class="icon ghost" aria-label="关闭"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+      <div id="createGate" class="browse-empty" hidden>创建房间需要先登录（右上角「登录」）；游客可凭邀请码加入房间</div>
+      <div id="createForm">
+        <p class="desc" style="margin:0 0 var(--sp-2)">成为房主：添加直链 / B 站 / OpenList 影片，统一控制播放、暂停、进度与倍速。</p>
+        <label for="createName">房间名（必填，会展示在房间列表）</label>
+        <input id="createName" type="text" maxlength="24" placeholder="例如：周末电影夜" autocomplete="off" />
+        <label for="createRoomId">房间号 <span class="opt">（可选，3-24 位字母/数字/连字符，长期使用固定房间）</span></label>
+        <input id="createRoomId" type="text" maxlength="24" placeholder="留空则自动生成" autocomplete="off" />
+        <label for="createInvite">邀请码 <span class="opt">（可选，4-16 位字母/数字）</span></label>
+        <input id="createInvite" type="text" maxlength="16" placeholder="留空则自动生成" autocomplete="off" />
+        <button id="createBtn" class="primary" aria-label="创建房间并成为房主">创建房间</button>
+        <p id="createMsg" role="status" aria-live="polite" style="min-height:18px;font-size:var(--fs-caption);color:var(--warning);margin:var(--sp-2) 0 0"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 加入房间弹窗（顶部「加入房间」按钮与房间行「直接加入」按钮共用） -->
+  <div id="joinModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="加入房间">
+      <div class="modal-head">
+        <h2><svg class="ic"><use href="#i-log-in"/></svg>加入房间</h2>
+        <button id="joinClose" class="icon ghost" aria-label="关闭"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+      <p class="desc" style="margin:0 0 var(--sp-2)">通常直接点开房主分享的链接即可自动进房；这里手动输入房间号与邀请码。</p>
+      <label for="joinRoom">房间号</label>
+      <input id="joinRoom" type="text" maxlength="24" placeholder="例如：movie-night" autocomplete="off" />
+      <label for="joinCode">邀请码</label>
+      <input id="joinCode" type="text" maxlength="16" placeholder="邀请码" autocomplete="off" />
+      <label for="joinName">你的昵称</label>
+      <input id="joinName" type="text" maxlength="24" placeholder="例如：小红" autocomplete="nickname" />
+      <button id="joinBtn" class="join" aria-label="凭房间号和邀请码加入房间">加入房间</button>
+      <p id="joinMsg" role="status" aria-live="polite" style="min-height:18px;font-size:var(--fs-caption);color:var(--warning);margin:var(--sp-2) 0 0"></p>
+    </div>
+  </div>
 
   <script type="module" src="/src/lobby-main.ts"></script>
 </body>

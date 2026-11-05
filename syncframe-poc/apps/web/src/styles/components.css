@@ -213,7 +213,7 @@ input[type="range"]:disabled { accent-color: var(--border-strong); }
   .card, .panel { padding: var(--sp-4) var(--sp-4); }
 }
 
-/* ── 账户设置弹窗（user-settings.ts 动态创建，大厅/房间页共用） ── */
+/* ── Provider 行（settings.html 账户设置页使用） ── */
 .settings-h {
   font-size: var(--fs-caption); font-weight: 600; color: var(--text-dim);
   letter-spacing: 0.4px; text-transform: uppercase;

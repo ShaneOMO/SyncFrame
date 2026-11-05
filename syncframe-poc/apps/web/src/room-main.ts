@@ -19,7 +19,6 @@ import wasmUrl from "movi-player/movi.wasm?url";
 import { CountingHttpSource } from "./counting-source.ts";
 import { initBrowsePanel } from "./browse.ts";
 import { loadSession, clearSession } from "./session.ts";
-import { openUserSettings } from "./user-settings.ts";
 import { icon } from "./icons.ts";
 
 const params = new URLSearchParams(location.search);
@@ -458,12 +457,10 @@ const client = new SyncClient({
       chip.innerHTML = `${crown}<span></span>`;
       chip.querySelector("span")!.textContent = m.name;
       if (m.id === clientId) {
-        // 点击自己的昵称 → 账户设置（provider 管理）。
+        // 点击自己的昵称 → 账户设置页（provider 管理）。
         chip.title = "账户设置（provider 管理）";
         chip.addEventListener("click", () => {
-          void openUserSettings().then((ok) => {
-            if (!ok) setStatus("登录后可管理 provider（右上角退出房间回大厅登录）", true);
-          });
+          location.href = "/settings.html";
         });
       }
       membersEl.appendChild(chip);
@@ -515,9 +512,7 @@ if (mode === "player" && role === "host") {
     }
   });
   $("#addMediaSettings").addEventListener("click", () => {
-    void openUserSettings().then((ok) => {
-      if (!ok) setAddMsg("请先在登录后管理 provider");
-    });
+    location.href = "/settings.html";
   });
 
   /** 注册媒体进播放列表（共用：直链 / B 站 / 路径）。 */

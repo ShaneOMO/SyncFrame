@@ -78,29 +78,35 @@ async function main(): Promise<void> {
     });
     await host.goto(`http://localhost:${WEB_PORT}/lobby.html`, { waitUntil: "domcontentloaded" });
     check("大厅页加载无 JS 错误", consoleErrors.length === 0, consoleErrors.join(" | "));
-    // 未登录：创建房间被隐藏，只能加入房间
+    // 未登录：创建弹窗内只显示登录提示（游客只能加入房间）
     check("游客态隐藏创建房间表单", await host.locator("#createForm").isHidden());
+    await host.click("#openCreateBtn");
     check("游客态显示登录提示", await host.locator("#createGate").isVisible());
-    // 登录管理员；登录后点用户名打开「账户设置」弹窗配置 OpenList provider（指向桩）
+    await host.click("#createClose");
+    // 登录管理员；登录后点用户名进入「账户设置」页配置 OpenList provider（指向桩）
     await host.click("#loginBtn");
     await host.fill("#authUsername", ADMIN_USER);
     await host.fill("#authPassword", ADMIN_PASS);
     await host.click("#authSubmit");
     await host.waitForSelector("#authModal[hidden]", { state: "attached", timeout: 10_000 });
     check("登录后回到大厅", true);
-    await host.click("#loginBtn"); // 用户名按钮 → 账户设置
-    await host.waitForSelector("#userSettingsModal:not([hidden])", { timeout: 10_000 });
-    check("账户设置弹窗打开", true);
-    check("管理员显示账户管理面板", await host.locator("[data-admin]:not([hidden])").isVisible());
+    check("管理员显示用户管理入口", await host.locator("#adminBtn").isVisible());
+    await host.click("#loginBtn"); // 用户名按钮 → 账户设置页
+    await host.waitForURL(/settings\.html/, { timeout: 10_000 });
+    await host.waitForFunction(() => document.querySelector("[data-who]")?.textContent?.length, { timeout: 10_000 });
+    check("账户设置页打开", true);
+    check("管理员显示用户管理页签", await host.locator("[data-nav='users']").isVisible());
     await host.selectOption("[data-kind]", "openlist");
     await host.fill("[data-label]", "桩");
     await host.fill("[data-baseurl]", `http://localhost:${STUB_PORT}`);
     await host.fill("[data-username]", "stub");
     await host.fill("[data-password]", "stub");
     await host.click("[data-add]");
-    await host.waitForFunction(() => document.querySelector("#userSettingsModal [data-msg]")?.textContent === "已保存", { timeout: 10_000 });
+    await host.waitForFunction(() => document.querySelector("[data-msg]")?.textContent === "已保存", { timeout: 10_000 });
     check("添加 OpenList provider", true);
-    await host.click("#userSettingsModal [data-close]");
+    await host.click(".topnav .nav-back"); // 返回大厅
+    await host.waitForURL(/lobby\.html/, { timeout: 10_000 });
+    await host.click("#openCreateBtn"); // 打开创建房间弹窗
     await host.fill("#createName", "UI房主");
     await host.click("#createBtn");
     await host.waitForURL(/room\.html\?room=/, { timeout: 30_000 });

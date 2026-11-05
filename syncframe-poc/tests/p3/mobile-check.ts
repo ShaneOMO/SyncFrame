@@ -94,11 +94,13 @@ async function main(): Promise<void> {
     await page.fill("#authPassword", ADMIN_PASS);
     await page.click("#authSubmit");
     await sleep(600);
-    await page.click("#loginBtn"); // 用户名按钮 → 账户设置（provider 管理）
+    await page.click("#loginBtn"); // 用户名按钮 → 账户设置页（provider 管理）
     await sleep(500);
     await page.screenshot({ path: "/tmp/m-lobby-provider.png" });
-    await diagnose(page, "大厅-账户设置弹窗");
-    await page.click("#userSettingsModal [data-close]");
+    await diagnose(page, "账户设置页-provider");
+    await page.click(".topnav .nav-back"); // 返回大厅
+    await sleep(400);
+    await page.click("#openCreateBtn");
     await page.fill("#createName", "移动端房主");
     await page.click("#createBtn");
     await page.waitForURL(/room\.html/, { timeout: 10_000 });
@@ -111,6 +113,7 @@ async function main(): Promise<void> {
     // 房主态：重新开房（host 会话），展示添加影片弹窗 / 播放列表
     await page.goto(`${web}/lobby.html`, { waitUntil: "networkidle" });
     await sleep(300);
+    await page.click("#openCreateBtn");
     await page.fill("#createName", "房主A");
     await page.click("#createBtn");
     await page.waitForURL(/room\.html/, { timeout: 10_000 });
