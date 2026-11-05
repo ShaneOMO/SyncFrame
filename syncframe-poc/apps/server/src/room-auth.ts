@@ -50,8 +50,8 @@ export interface MediaEntry {
   /** 房主私有 OpenList provider 的所有者（用户名）+ providerId；grant 时用该用户的凭据解析。 */
   providerOwner?: string;
   providerId?: string;
-  /** Bilibili provider：BV 号 + 分 P cid + aid（仅服务端持有）。 */
-  bilibili?: { bvid: string; cid: number; aid: number };
+  /** Bilibili provider：BV 号 + 分 P cid + aid（普通视频）；番剧另带 epId（仅服务端持有）。 */
+  bilibili?: { bvid?: string; cid: number; aid?: number; epId?: number };
 }
 
 export interface RelatedEntry {
@@ -343,7 +343,7 @@ export class RoomRegistry {
       directUrl?: string;
       providerOwner?: string;
       providerId?: string;
-      bilibili?: { bvid: string; cid: number; aid: number };
+      bilibili?: { bvid?: string; cid: number; aid?: number; epId?: number };
     } = {},
   ): { mediaId: string; related: RelatedEntry[] } | { error: string } {
     const room = this.rooms.get(roomId);
@@ -357,7 +357,9 @@ export class RoomRegistry {
         return { error: "非法直链地址" };
       }
     } else if (ext.bilibili !== undefined) {
-      if (!/^BV1[a-zA-Z0-9]{9}$/.test(ext.bilibili.bvid) || !Number.isInteger(ext.bilibili.cid) || ext.bilibili.cid <= 0) {
+      const b = ext.bilibili;
+      const validBv = b.bvid !== undefined && /^BV1[a-zA-Z0-9]{9}$/.test(b.bvid);
+      if ((!validBv && !(b.epId && b.epId > 0)) || !Number.isInteger(b.cid) || b.cid <= 0) {
         return { error: "非法 bilibili 视频标识" };
       }
     } else if (!path.startsWith("/") || path.split("/").includes("..")) {
@@ -368,7 +370,9 @@ export class RoomRegistry {
       const same = ext.directUrl !== undefined
         ? entry.directUrl === ext.directUrl
         : ext.bilibili !== undefined
-          ? entry.bilibili?.bvid === ext.bilibili.bvid && entry.bilibili?.cid === ext.bilibili.cid
+          ? entry.bilibili?.epId && ext.bilibili.epId
+            ? entry.bilibili.epId === ext.bilibili.epId
+            : entry.bilibili?.bvid === ext.bilibili.bvid && entry.bilibili?.cid === ext.bilibili.cid
           : entry.path === path;
       if (same) {
         return { mediaId: entry.mediaId, related: this.relatedEntries(room, entry.mediaId) };

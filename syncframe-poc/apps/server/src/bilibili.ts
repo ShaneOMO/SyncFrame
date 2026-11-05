@@ -21,12 +21,24 @@ const DEFAULT_UA =
 const PLAYURL_CACHE_MS = 15 * 60 * 1000;
 
 export interface BilibiliVideoRef {
-  aid: number;
-  bvid: string;
+  aid?: number;
+  bvid?: string;
   cid: number;
   title: string;
   /** 封面（仅注册时回显用）。 */
   pic?: string;
+  /** 番剧条目：ep 号（pgc playurl 需要 ep_id）。 */
+  epId?: number;
+}
+
+/** 番剧（pgc）单集信息。 */
+export interface BangumiEpisodeRef {
+  epId: number;
+  cid: number;
+  bvid?: string;
+  aid?: number;
+  /** 展示标题：季标题 + 单集标题。 */
+  title: string;
 }
 
 export interface BilibiliPlayUrl {
@@ -45,11 +57,11 @@ export interface BilibiliPlayUrl {
 export class BilibiliError extends Error {}
 
 /**
- * 从任意用户输入解析出 bvid 或 aid：
- * 支持 "BV1xx411c7mD"、"av170001"、"https://www.bilibili.com/video/BV…"、
- * "bilibili.com/video/av…"、纯 query（bvid=…/aid=…）。解析不到返回 null。
+ * 从任意用户输入解析出 bvid / aid / 番剧 ep / 季 ss：
+ * 支持 "BV1xx411c7mD"、"av170001"、bilibili 视频/番剧链接、纯 ep12345 / ss12345。
+ * 解析不到返回 null。
  */
-export function parseVideoId(input: string): { bvid?: string; aid?: number } | null {
+export function parseVideoId(input: string): { bvid?: string; aid?: number; epId?: number; seasonId?: number } | null {
   const s = input.trim();
   if (!s) return null;
   const bv = /BV1[a-zA-Z0-9]{9}/.exec(s);
@@ -58,6 +70,11 @@ export function parseVideoId(input: string): { bvid?: string; aid?: number } | n
   if (av) return { aid: Number(av[1]) };
   const bvidParam = /[?&]bvid=(BV1[a-zA-Z0-9]{9})/.exec(s);
   if (bvidParam) return { bvid: bvidParam[1] };
+  // 番剧：/bangumi/play/ep12345、/bangumi/media/ss12345、?ep_id=、纯 ep/ss 号。
+  const ep = /(?:\/bangumi\/play\/ep|ep_id=|^\s*ep)(\d{2,})/i.exec(s);
+  if (ep) return { epId: Number(ep[1]) };
+  const ss = /(?:\/bangumi\/media\/ss|season_id=|^\s*ss)(\d{2,})/i.exec(s);
+  if (ss) return { seasonId: Number(ss[1]) };
   return null;
 }
 
@@ -80,7 +97,7 @@ export class BilibiliClient {
     this.anonCookie = `buvid3=${buvid3}; b_nut=${Math.floor(Date.now() / 1000)}`;
   }
 
-  private async apiGet<T>(path: string): Promise<T> {
+  private async apiGet<T>(path: string, payloadKey: "data" | "result" = "data"): Promise<T> {
     const url = `${API_BASE}${path}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -100,13 +117,14 @@ export class BilibiliClient {
       clearTimeout(timer);
     }
     if (!res.ok) throw new BilibiliError(`bilibili API HTTP ${res.status}`);
-    const body = (await res.json()) as BilibiliApiResp<T>;
+    const body = (await res.json()) as BilibiliApiResp<T> & { result?: T | null };
     if (body.code !== 0) {
       // -404 投稿不存在； -403 风控/需要登录。
       throw new BilibiliError(`bilibili 错误 ${body.code}: ${body.message || "未知错误"}`);
     }
-    if (body.data === null || body.data === undefined) throw new BilibiliError("bilibili 返回空数据");
-    return body.data;
+    const payload = payloadKey === "result" ? body.result : body.data;
+    if (payload === null || payload === undefined) throw new BilibiliError("bilibili 返回空数据");
+    return payload;
   }
 
   /** 视频信息：标题 + 首个分 P 的 cid（PoC 只支持单 P，SynTV 的选 P 后续再加）。 */
@@ -125,10 +143,42 @@ export class BilibiliClient {
   }
 
   /**
-   * 取可播放地址：优先 DASH（mp4 单文件流，带 cookie 时可到 1080P+/Dolby），
-   * 失败回退 fnval=1 的 durl mp4 流。URL 仅供服务端拉流（Referer 敏感）。
+   * 番剧（pgc）信息：按 ep 号或季 ss 号解析出单集的 cid/epId/标题。
+   * 未登录/无权限的会员番剧会在此报 -403（游客看不了，需房主先扫码登录）。
    */
-  async getPlayUrl(bvid: string, cid: number): Promise<BilibiliPlayUrl> {
+  async getBangumiInfo(ref: { epId?: number; seasonId?: number }): Promise<BangumiEpisodeRef> {
+    const query = ref.epId ? `ep_id=${ref.epId}` : `season_id=${ref.seasonId!}`;
+    const data = await this.apiGet<{
+      title?: string;
+      season_title?: string;
+      episodes?: {
+        id: number;
+        cid: number;
+        aid?: number;
+        bvid?: string;
+        title?: string;
+        long_title?: string;
+      }[];
+    }>(`/pgc/view/web/season?${query}`, "result");
+    const episodes = data.episodes ?? [];
+    if (!episodes.length) throw new BilibiliError("无法获取番剧集信息（可能需要登录 cookie）");
+    const ep = ref.epId ? episodes.find((e) => e.id === ref.epId) : episodes[0];
+    if (!ep || !ep.cid) throw new BilibiliError(`番剧集不存在（ep=${ref.epId ?? "?"}）`);
+    const season = data.season_title ?? data.title ?? "番剧";
+    const epTitle = ep.long_title || ep.title || `第 ${ep.title ?? ep.id} 集`;
+    return { epId: ep.id, cid: ep.cid, aid: ep.aid, bvid: ep.bvid, title: `${season} ${epTitle}`.trim() };
+  }
+
+  /**
+   * 取可播放地址：优先 DASH（mp4 单文件流，带 cookie 时可到 1080P+/Dolby；
+   * 未登录最多 1080P，番剧/会员内容可能直接 -403），失败回退 durl mp4 流。
+   * ref 传 {bvid, cid}（普通视频）或 {epId, cid}（番剧，走 /pgc/player/web/playurl）。
+   * URL 仅供服务端拉流（Referer 敏感）。
+   */
+  async getPlayUrl(ref: { bvid?: string; cid: number; epId?: number }): Promise<BilibiliPlayUrl> {
+    const playUrlPath = ref.epId
+      ? `/pgc/player/web/playurl?ep_id=${ref.epId}&cid=${ref.cid}&qn=127&fnval=4048&platform=pc`
+      : `/x/player/playurl?bvid=${encodeURIComponent(ref.bvid!)}&cid=${ref.cid}&qn=127&fnval=4048&platform=pc`;
     const dash = await this.apiGet<{
       dash?: {
         video: { id: number; baseUrl: string; base_url?: string; codecid: number }[];
@@ -140,9 +190,7 @@ export class BilibiliClient {
       format?: string;
       quality?: number;
       timelength: number;
-    }>(
-      `/x/player/playurl?bvid=${encodeURIComponent(bvid)}&cid=${cid}&qn=127&fnval=4048&platform=pc`,
-    );
+    }>(playUrlPath, ref.epId ? "result" : "data");
     const timelength = Math.round((dash.timelength ?? 0) / 1000);
     const qualityOf = (id: number): string =>
       dash.support_formats?.find((f) => f.quality === id)?.new_description ?? `qn=${id}`;
@@ -179,11 +227,14 @@ interface CacheEntry {
 const playUrlCache = new Map<string, CacheEntry>();
 
 /** 带缓存的 playurl 解析；缓存 15 分钟。bilibili 客户端由调用方按 cookie 提供。 */
-export function getPlayUrlCached(client: BilibiliClient, bvid: string, cid: number): Promise<BilibiliPlayUrl> {
-  const key = `${bvid}:${cid}`;
+export function getPlayUrlCached(
+  client: BilibiliClient,
+  ref: { bvid?: string; cid: number; epId?: number },
+): Promise<BilibiliPlayUrl> {
+  const key = ref.epId ? `ep${ref.epId}:${ref.cid}` : `${ref.bvid}:${ref.cid}`;
   const hit = playUrlCache.get(key);
   if (hit && hit.at > Date.now() - PLAYURL_CACHE_MS) return hit.promise;
-  const promise = client.getPlayUrl(bvid, cid);
+  const promise = client.getPlayUrl(ref);
   playUrlCache.set(key, { at: Date.now(), promise });
   promise.catch(() => {
     // 失败不缓存：下次重试。

@@ -591,7 +591,7 @@ async function handleRegisterMedia(
     const rawUrl = typeof parsed.url === "string" ? parsed.url : (typeof parsed.bvid === "string" ? parsed.bvid : "");
     const ref = parseVideoId(rawUrl);
     if (!ref) {
-      sendJson(res, 400, { error: "无法识别 bilibili 视频（支持 BV 号 / av 号 / bilibili 链接）" });
+      sendJson(res, 400, { error: "无法识别 bilibili 视频（支持 BV 号 / av 号 / 视频或番剧链接 / ep、ss 号）" });
       return;
     }
     // 私有 provider：bilibili:<providerId>，必须是房间创建者本人账户的 cookie 配置。
@@ -611,11 +611,28 @@ async function handleRegisterMedia(
       providerOwner = owner;
     }
     try {
+      // 番剧（ep/ss）：走 pgc 接口取单集 cid；普通视频走 web-interface view。
+      const ref = parseVideoId(rawUrl)!;
+      if ((ref.epId || ref.seasonId) && !providerCfg) {
+        // 番剧/会员内容游客匿名看不了：自动改用房主已绑定的 B 站凭据
+        // （注册后凭据随 /stream 反代共享给全房间观众，SyncTV 的凭据共享语义）。
+        const hostUser = registry.peek(roomId)?.hostUser;
+        const hostBili = hostUser
+          ? [...(accounts.getUser(hostUser)?.providers.values() ?? [])].find((p) => p.kind === "bilibili" && p.cookie)
+          : undefined;
+        if (hostBili && hostBili.kind === "bilibili") {
+          providerCfg = hostBili;
+          providerLabel = hostBili.label;
+          providerOwner = hostUser;
+        }
+      }
       const bc = bilibiliClientFor(providerCfg);
-      const info = await bc.getVideoInfo(ref);
+      const info = ref.epId || ref.seasonId
+        ? await bc.getBangumiInfo({ epId: ref.epId, seasonId: ref.seasonId })
+        : await bc.getVideoInfo(ref);
       const result = registry.registerMedia(roomId, member, "", { name: info.title, size: 0 }, [], {
         provider: providerLabel,
-        bilibili: { bvid: info.bvid, cid: info.cid, aid: info.aid },
+        bilibili: { bvid: info.bvid, cid: info.cid, aid: info.aid, epId: info.epId },
         ...(providerOwner ? { providerOwner, providerId: providerCfg!.id } : {}),
       });
       if ("error" in result) {
@@ -784,7 +801,7 @@ async function handleStream(
         ? accounts.getUser(entry.providerOwner)?.providers.get(entry.providerId)
         : undefined,
     );
-    const play = await getPlayUrlCached(bc, entry.bilibili.bvid, entry.bilibili.cid);
+    const play = await getPlayUrlCached(bc, { bvid: entry.bilibili.bvid, cid: entry.bilibili.cid, epId: entry.bilibili.epId });
     const range = req.headers.range;
     const upstream = await fetch(play.url, {
       headers: {
@@ -1123,6 +1140,7 @@ server.listen(PORT, () => {
   console.log(`  GET  /api/rooms | POST /api/rooms（需登录）| /api/rooms/:id/join   （房间列表 + 房间鉴权）`);
   console.log(`  GET  /api/browse?room=&provider= | /api/search?provider=&keywords=   （房主本人媒体库）`);
   console.log(`  POST /api/rooms/:id/media | GET .../media/:mediaId/grant   （受控映射 + 短期凭证）`);
+  console.log(`  POST media {provider:"bilibili", url}  支持 BV/av/视频链接/番剧 ep、ss（番剧自动用房主凭据共享给全房间）`);
   console.log(`  GET  .../media/:mediaId/stream?ticket=   （Bilibili 流反代，Range 透传，60s 票据）`);
   console.log(`  WS   /ws?room=<id>（子协议 sf.token.*）   （凭成员令牌入场）`);
 });

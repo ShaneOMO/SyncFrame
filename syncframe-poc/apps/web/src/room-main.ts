@@ -567,7 +567,7 @@ if (mode === "player" && role === "host") {
     const provider = ($("#biliProviderSel") as HTMLSelectElement).value;
     const url = ($("#addBiliUrl") as HTMLInputElement).value.trim();
     if (!url) {
-      setAddMsg("请填写 BV 号 / av 号 / bilibili 链接");
+      setAddMsg("请填写 BV 号 / av 号 / 视频或番剧链接（番剧建议先扫码绑定 B 站）");
       return;
     }
     void registerMedia({ provider, url }).then(() => {
