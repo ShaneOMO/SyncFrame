@@ -6,15 +6,16 @@
  *   ADMIN_USERNAME / ADMIN_PASSWORD）；
  * - 角色：admin（管理账户）/ user（普通用户）。游客（未登录）只能凭邀请码加入房间，
  *   不能创建房间、不能配置 provider；
- * - 每个用户在自己的 provider 配置里保存 OpenList 凭据 / Bilibili SESSDATA
- *   （凭据只存服务端，不回显密码与 cookie）。
+ * - OpenList 凭据保存在服务端 provider 配置中；
+ *   **Bilibili SESSDATA 不入服务端**：由浏览器 localStorage 持有，请求时经
+ *   X-Bili-Sessdata 头传入，服务端即用即弃（见 index.ts）。
  *
- * 持久化：传入 dataDir 后，账户（含 provider 凭据）落盘为 <dataDir>/users.json
- * （原子写入：tmp + rename）；重启后账户保留，用户令牌仍内存态（重启需重新登录）。
- * 注意：该文件含凭据，务必保持私有（chmod 600 / 不要提交 git）。
+ * 持久化：传入 dataDir 后，账户（含 OpenList 凭据）落盘为 <dataDir>/users.json
+ * （原子写入：tmp + rename，权限 0600）；重启后账户保留，用户令牌仍内存态（重启需重新登录）。
+ * 注意：该文件含 OpenList 凭据，务必保持私有。
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
@@ -29,13 +30,11 @@ export interface OpenListProviderConfig {
   password: string;
 }
 
-/** Bilibili provider（参考 SyncTV）：可选 SESSDATA cookie，匿名也可播放（≤1080P）。 */
+/** Bilibili provider（参考 SyncTV）：仅保存展示用标签，SESSDATA 由浏览器持有。 */
 export interface BilibiliProviderConfig {
   id: string;
   kind: "bilibili";
   label: string;
-  /** SESSDATA 等 cookie 串（可选；只存服务端内存，不回显）。 */
-  cookie?: string;
 }
 
 export type ProviderConfig = OpenListProviderConfig | BilibiliProviderConfig;
@@ -89,14 +88,26 @@ export class UserAccounts {
         users?: (Omit<UserRecord, "providers"> & { providers?: ProviderConfig[] })[];
       };
       for (const u of raw.users ?? []) {
-        this.users.set(u.username, { ...u, providers: new Map((u.providers ?? []).map((p) => [p.id, p])) });
+        this.users.set(u.username, {
+          ...u,
+          providers: new Map(
+            (u.providers ?? []).map((p) => {
+              // 旧版本曾把 SESSDATA 落盘：加载时立即丢弃，确保服务端不再持有 B 站凭据。
+              if (p.kind === "bilibili" && "cookie" in p) {
+                const { cookie: _legacy, ...rest } = p as BilibiliProviderConfig & { cookie?: string };
+                return [p.id, rest as BilibiliProviderConfig] as const;
+              }
+              return [p.id, p] as const;
+            }),
+          ),
+        });
       }
     } catch {
       // 文件不存在或损坏：从空账户开始（损坏时备份由部署者处理）。
     }
   }
 
-  /** 原子落盘（tmp + rename）；未配置 dataDir 时为无操作。 */
+  /** 原子落盘（tmp + rename，权限 0600）；未配置 dataDir 时为无操作。 */
   private save(): void {
     if (!this.file) return;
     try {
@@ -105,8 +116,10 @@ export class UserAccounts {
       writeFileSync(
         tmp,
         JSON.stringify({ version: 1, users: [...this.users.values()].map((u) => ({ ...u, providers: [...u.providers.values()] })) }),
+        { mode: 0o600 },
       );
       renameSync(tmp, this.file);
+      chmodSync(this.file, 0o600);
     } catch (err) {
       console.warn(`[store] 账户落盘失败: ${err instanceof Error ? err.message : err}`);
     }
@@ -251,8 +264,8 @@ export class UserAccounts {
         next.set(id, { id, kind: "openlist", label: label.slice(0, 24), baseUrl: baseUrl.replace(/\/+$/, ""), username: usernameCfg, password });
       } else if (p.kind === "bilibili") {
         const label = (typeof p.label === "string" ? p.label.trim() : "") || "哔哩哔哩";
-        const cookie = typeof p.cookie === "string" ? p.cookie.trim() : "";
-        next.set(id, { id, kind: "bilibili", label: label.slice(0, 24), ...(cookie ? { cookie } : {}) });
+        // SESSDATA 由浏览器持有，服务端只保留展示标签（即使请求里带了 cookie 也丢弃）。
+        next.set(id, { id, kind: "bilibili", label: label.slice(0, 24) });
       } else {
         return { ok: false, error: "仅支持 openlist / bilibili provider" };
       }
@@ -262,32 +275,8 @@ export class UserAccounts {
     return { ok: true };
   }
 
-  /**
-   * 扫码登录成功后写入凭据：更新该用户第一个 bilibili provider 的 cookie，
-   * 没有则新建一个（label = "哔哩哔哩" 或 "哔哩哔哩·<昵称>"）。
-   * cookie 只存服务端；返回 provider 的公开形态（不含 cookie）。
-   */
-  upsertBilibiliCookie(username: string, cookie: string, uname?: string): { ok: true; provider: PublicProvider } | { ok: false; error: string } {
-    const user = this.users.get(username);
-    if (!user) return { ok: false, error: "用户不存在" };
-    if (!/SESSDATA=/.test(cookie)) return { ok: false, error: "凭据缺少 SESSDATA" };
-    const existing = [...user.providers.values()].find((p) => p.kind === "bilibili");
-    if (existing && existing.kind === "bilibili") {
-      existing.cookie = cookie;
-    } else {
-      const id = randomBytes(6).toString("base64url");
-      user.providers.set(id, {
-        id,
-        kind: "bilibili",
-        label: `哔哩哔哩${uname ? `·${uname}`.slice(0, 24) : ""}`,
-        cookie,
-      });
-    }
-    this.save();
-    return { ok: true, provider: this.listProviders(username).find((p) => p.kind === "bilibili")! };
-  }
-
-  /** 对外展示形态（不含密码/cookie 等凭据）。 */  listProviders(username: string): PublicProvider[] {
+  /** 对外展示形态（不含密码等凭据）。 */
+  listProviders(username: string): PublicProvider[] {
     const user = this.users.get(username);
     if (!user) return [];
     return [...user.providers.values()].map((p) => {
@@ -295,8 +284,7 @@ export class UserAccounts {
         const { password: _pw, ...pub } = p;
         return pub;
       }
-      const { cookie: _ck, ...pub } = p;
-      return pub;
+      return p as PublicProvider;
     });
   }
 }

@@ -11,6 +11,9 @@
 
 const USER_KEY = "syncframe-user";
 
+/** B 站凭证存储在浏览器（服务端不保存），与账户令牌分开管理。 */
+import { clearBiliSessdata, loadBiliSessdata, saveBiliSessdata } from "./bili-credential.ts";
+
 interface UserState {
   token: string;
   username: string;
@@ -118,15 +121,34 @@ function bindTabs(): void {
 // ── 个人：视频 provider 管理 ─────────────────────────────────
 
 function renderProviders(providers: PublicProvider[]): void {
-  $("[data-provider-count]").textContent = String(providers.length);
+  const bound = Boolean(loadBiliSessdata());
+  $("[data-provider-count]").textContent = String(providers.length + (bound ? 1 : 0));
   const listEl = $("[data-provider-list]");
   listEl.textContent = "";
-  if (providers.length === 0) {
+  if (providers.length === 0 && !bound) {
     listEl.appendChild(el("div", { className: "browse-empty" },
-      "（尚未配置 provider；可添加 OpenList / 哔哩哔哩，或在房间里直接用直链、B 站链接）"));
+      "（尚未配置 provider；可添加 OpenList，或在房间里直接用直链、B 站链接）"));
     return;
   }
   const grid = el("div", { className: "provider-grid" });
+  // B 站凭证属于本浏览器（服务端不保存），因此单独渲染一张卡片，避免看起来"凭空消失"。
+  if (bound) {
+    const card = el("div", { className: "provider-card" });
+    const top = el("div", { className: "top" });
+    top.append(el("span", { className: "kind" }, "哔哩哔哩"), el("b", {}, "本浏览器已绑定"));
+    const meta = el("span", { className: "meta" }, "凭证保存在本浏览器，服务端不保存");
+    const actions = el("div", { className: "actions" });
+    const del = el("button", { className: "danger" }, "清除");
+    del.addEventListener("click", () => {
+      clearBiliSessdata();
+      renderProviders(providers);
+      renderBiliCredStatus();
+      msg("已清除本浏览器的 B 站凭证", true);
+    });
+    actions.appendChild(del);
+    card.append(top, meta, actions);
+    grid.appendChild(card);
+  }
   for (const p of providers) {
     const card = el("div", { className: "provider-card" });
     const top = el("div", { className: "top" });
@@ -135,7 +157,7 @@ function renderProviders(providers: PublicProvider[]): void {
       el("b", {}, p.label),
     );
     const meta = el("span", { className: "meta" },
-      p.kind === "openlist" ? `${p.baseUrl} · ${p.username}` : "SESSDATA 凭据仅存服务端");
+      p.kind === "openlist" ? `${p.baseUrl} · ${p.username}` : "B 站凭证保存在浏览器，服务端不保存");
     const actions = el("div", { className: "actions" });
     const del = el("button", { className: "danger" }, "删除");
     del.addEventListener("click", () => void saveProviders(providers.filter((x) => x.id !== p.id)));
@@ -183,16 +205,16 @@ async function onAdd(): Promise<void> {
     }
     next = { id: "", kind: "openlist", label: label || "OpenList", baseUrl, username, password };
   } else {
-    const label = ($("[data-bililabel]") as HTMLInputElement).value.trim();
-    const cookie = ($("[data-bilicookie]") as HTMLInputElement).value.trim();
-    next = { id: "", kind: "bilibili", label: label || "哔哩哔哩", cookie };
+    // B 站凭证保存在本浏览器，不再创建服务端 provider。
+    msg("B 站凭证只保存在本浏览器：请点「扫码绑定 B 站」，无需添加 provider");
+    return;
   }
   try {
     const me = await fetchMe();
     if (!me) expireToLobby();
     await saveProviders([...me!.providers, next as unknown as PublicProvider]);
     if ($("[data-msg]").classList.contains("ok")) {
-      for (const sel of ["[data-label]", "[data-baseurl]", "[data-username]", "[data-password]", "[data-bililabel]", "[data-bilicookie]"]) {
+      for (const sel of ["[data-label]", "[data-baseurl]", "[data-username]", "[data-password]"]) {
         ($(sel) as HTMLInputElement).value = "";
       }
     }
@@ -201,14 +223,32 @@ async function onAdd(): Promise<void> {
   }
 }
 
+function renderBiliCredStatus(): void {
+  const el = document.querySelector<HTMLElement>("[data-bili-cred-status]");
+  if (!el) return;
+  el.textContent = loadBiliSessdata()
+    ? "本浏览器已绑定 B 站账号：播放时使用该凭证解析（服务器不会保存，也不会共享给其他人）。"
+    : "本浏览器未绑定：匿名解析，画质上限 720P，番剧/会员内容可能无法播放。";
+}
+
 function bindProviderForm(): void {
   $("[data-kind]").addEventListener("change", () => {
     const kind = ($("[data-kind]") as HTMLSelectElement).value;
     $("[data-openlist-fields]").hidden = kind !== "openlist";
     $("[data-bilibili-fields]").hidden = kind !== "bilibili";
+    renderBiliCredStatus();
   });
   $("[data-add]").addEventListener("click", () => void onAdd());
   $("[data-bili-qr]").addEventListener("click", () => void startBiliQrLogin());
+  $("[data-bili-clear]").addEventListener("click", () => {
+    clearBiliSessdata();
+    renderBiliCredStatus();
+    void fetchMe().then((me) => {
+      if (me) renderProviders(me.providers);
+    });
+    setQrStatus("已清除本浏览器的 B 站凭证");
+    msg("已清除本浏览器的 B 站凭证", true);
+  });
 }
 
 // ── Bilibili 扫码登录（SyncTV 式绑定；凭据只在服务端，前端只见二维码与登录昵称）──
@@ -257,7 +297,7 @@ async function pollBiliQr(qrcodeKey: string): Promise<void> {
     const body = (await res.json().catch(() => ({}))) as {
       status?: string;
       uname?: string;
-      provider?: PublicProvider;
+      sessdata?: string;
       error?: string;
     };
     if (!res.ok) {
@@ -273,10 +313,18 @@ async function pollBiliQr(qrcodeKey: string): Promise<void> {
     } else if (body.status === "confirmed") {
       stopQrPolling();
       ($("[data-bili-qr-canvas]") as HTMLCanvasElement).hidden = true;
-      setQrStatus(`登录成功${body.uname ? `：${body.uname}` : ""}，凭据已保存到服务端`);
-      msg("B 站登录成功，已添加/更新哔哩哔哩 provider", true);
-      const me = await fetchMe();
-      if (me) renderProviders(me.providers);
+      const sessdata = body.sessdata ?? "";
+      if (!saveBiliSessdata(sessdata)) {
+        setQrStatus("登录已确认，但凭证保存失败（浏览器存储不可用，请检查隐私模式）");
+        return;
+      }
+      setQrStatus(`绑定成功${body.uname ? `：${body.uname}` : ""}，凭证已保存在本浏览器`);
+      msg("B 站账号已绑定到本浏览器（服务器不保存）", true);
+      renderBiliCredStatus();
+      // 立即把「本浏览器已绑定」卡片显示出来（否则要刷新页面才看得到）
+      void fetchMe().then((me) => {
+        if (me) renderProviders(me.providers);
+      });
     }
     // waiting：保持轮询。
   } catch {
@@ -380,6 +428,7 @@ async function main(): Promise<void> {
   }
   bindTabs();
   bindProviderForm();
+  renderBiliCredStatus();
   $("[data-create-user]").addEventListener("click", () => void onCreateUser());
   $("[data-logout]").addEventListener("click", () => {
     localStorage.removeItem(USER_KEY);

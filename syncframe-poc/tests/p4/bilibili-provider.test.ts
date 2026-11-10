@@ -2,9 +2,10 @@
  * P4 provider 扩展测试：bilibili provider（参考 SyncTV 设计）+ 直链 provider。
  *
  * 覆盖：
- * - parseVideoId：BV 号 / av 号 / bilibili 链接 / 非法输入；
- * - BilibiliClient.getPlayUrl：DASH 最高画质选取 + durl 回退（mock fetch，不打真实网络）；
- * - UserAccounts：bilibili provider 配置（cookie 可选、不回显）与非法 kind 拒绝；
+ * - parseVideoId：BV 号 / av 号 / bilibili 链接 / 番剧 ep·ss / 非法输入；
+ * - BilibiliClient.getPlayUrl：DASH 视频+音轨选取、mcdn 直连判定、durl 回退（mock fetch）；
+ * - credentialFingerprint / extractSessdata：凭证不落库、不泄漏；
+ * - UserAccounts：bilibili provider 只保留标签，旧版落盘 cookie 加载即丢弃；
  * - RoomRegistry：bilibili 媒体注册校验、幂等去重、grant 走 resolve 回调。
  *
  * 运行：node --import tsx --test tests/p4/bilibili-provider.test.ts
@@ -12,9 +13,16 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseVideoId, BilibiliClient } from "../../apps/server/src/bilibili.ts";
+import {
+  parseVideoId,
+  BilibiliClient,
+  credentialFingerprint,
+  isDirectPlayableHost,
+  parseSessdata,
+} from "../../apps/server/src/bilibili.ts";
 import { UserAccounts } from "../../apps/server/src/user-accounts.ts";
 import { RoomRegistry } from "../../apps/server/src/room-auth.ts";
+import { extractSessdata } from "../../apps/server/src/bilibili-login.ts";
 
 // ── parseVideoId ────────────────────────────────────────────
 
@@ -67,7 +75,10 @@ test("getPlayUrl 从 DASH 选最高画质 mp4 流", async () => {
           { id: 64, baseUrl: "https://upos-sz-mirror.bilivideo.com/low.mp4", codecid: 7 },
           { id: 80, baseUrl: "https://upos-sz-mirror.bilivideo.com/high.mp4", codecid: 7 },
         ],
-        audio: [],
+        audio: [
+          { id: 30216, baseUrl: "https://upos-sz-mirror.bilivideo.com/a-low.m4s" },
+          { id: 30280, baseUrl: "https://upos-sz-mirror.bilivideo.com/a-high.m4s" },
+        ],
       },
     },
   });
@@ -77,6 +88,93 @@ test("getPlayUrl 从 DASH 选最高画质 mp4 流", async () => {
   assert.equal(play.format, "mp4");
   assert.equal(play.quality, "1080P 高清");
   assert.equal(play.timelength, 300);
+  // 音视频分离：必须取最高码率音轨，否则播放器没有声音
+  assert.equal(play.audioUrl, "https://upos-sz-mirror.bilivideo.com/a-high.m4s");
+  // 标准 443 主机强制校验 Referer → 浏览器不能直连
+  assert.equal(play.directOk, false);
+});
+
+test("getPlayUrl 对 mcdn 主机标记为可直连", async () => {
+  mockFetchOnce({
+    code: 0,
+    message: "0",
+    data: {
+      timelength: 60_000,
+      dash: {
+        duration: 60,
+        video: [{ id: 80, baseUrl: "https://xy1x2x3x4xy.mcdn.bilivideo.cn:8082/v.mp4", codecid: 7 }],
+        audio: [{ id: 30280, baseUrl: "https://xy1x2x3x4xy.mcdn.bilivideo.cn:8082/a.m4s" }],
+      },
+    },
+  });
+  const bc = new BilibiliClient();
+  const play = await bc.getPlayUrl({ bvid: "BV1xx411c7mD", cid: 123456 });
+  assert.equal(play.directOk, true);
+  assert.equal(isDirectPlayableHost(play.url), true);
+  assert.equal(isDirectPlayableHost("https://upos-sz-mirror.bilivideo.com/x.mp4"), false);
+});
+
+test("getPlayUrl 音轨不可直连时整体不可直连（否则会没声音）", async () => {
+  mockFetchOnce({
+    code: 0,
+    message: "0",
+    data: {
+      timelength: 60_000,
+      dash: {
+        duration: 60,
+        video: [{ id: 80, baseUrl: "https://xy1x2x3x4xy.mcdn.bilivideo.cn:8082/v.mp4", codecid: 7 }],
+        audio: [{ id: 30280, baseUrl: "https://upos-sz-mirror.bilivideo.com/a.m4s" }],
+      },
+    },
+  });
+  const bc = new BilibiliClient();
+  const play = await bc.getPlayUrl({ bvid: "BV1xx411c7mD", cid: 123456 });
+  assert.equal(play.directOk, false, "音轨走不了直连时必须整体回落反代");
+});
+
+test("getPlayUrl durl 回退不走直连（分片无法随机访问）", async () => {
+  mockFetchOnce({
+    code: 0,
+    message: "0",
+    data: {
+      timelength: 60_000,
+      format: "mp4",
+      quality: 32,
+      durl: [{ url: "https://xy1x2x3x4xy.mcdn.bilivideo.cn:8082/seg1.mp4" }],
+    },
+  });
+  const bc = new BilibiliClient();
+  const play = await bc.getPlayUrl({ bvid: "BV1xx411c7mD", cid: 123456 });
+  assert.equal(play.directOk, false);
+  assert.equal(play.audioUrl, undefined, "durl 本身音画合一，不应再有独立音轨");
+});
+
+test("credentialFingerprint 区分凭证且不泄漏明文", () => {
+  assert.equal(credentialFingerprint(null), "anon");
+  const a = credentialFingerprint("SESSDATA=aaa");
+  const b = credentialFingerprint("SESSDATA=bbb");
+  assert.notEqual(a, b);
+  assert.match(a, /^[0-9a-f]{16}$/);
+  assert.ok(!a.includes("aaa"));
+});
+
+test("extractSessdata 只保留 SESSDATA，丢弃写操作 cookie", () => {
+  assert.equal(extractSessdata("SESSDATA=abc; bili_jct=xyz; DedeUserID=42"), "SESSDATA=abc");
+  assert.equal(extractSessdata("bili_jct=xyz"), null);
+  assert.equal(extractSessdata(""), null);
+});
+
+test("parseSessdata 接受 URL 编码的真实 SESSDATA", () => {
+  // B 站真实形态：逗号被编码成 %2C，还含 * 等字符
+  const real = "SESSDATA=1a2b3c4d%2C1790000000%2C1a2b3%2A21";
+  assert.equal(parseSessdata(real), real, "含 %2C 的合法凭证不得被拒");
+  assert.equal(parseSessdata("  SESSDATA=abcd1234  "), "SESSDATA=abcd1234");
+  // 拒绝：非 SESSDATA、多 cookie 拼接、空值、超长
+  assert.equal(parseSessdata("bili_jct=xyz"), null);
+  assert.equal(parseSessdata("SESSDATA=abc; DedeUserID=42"), null);
+  assert.equal(parseSessdata("SESSDATA="), null);
+  assert.equal(parseSessdata(null), null);
+  assert.equal(parseSessdata(`SESSDATA=${"a".repeat(300)}`), null);
 });
 
 test("getPlayUrl 无 DASH 时回退 durl", async () => {
@@ -164,7 +262,7 @@ test("getPlayUrl 番剧走 /pgc/player/web/playurl（带 ep_id）", async () => 
 
 // ── UserAccounts：bilibili provider 配置 ────────────────────
 
-test("setProviders 接受 bilibili（cookie 可选，不回显）", () => {
+test("setProviders 忽略 bilibili cookie（凭证不落服务端）", () => {
   const accounts = new UserAccounts();
   assert.equal(accounts.initAdmin("admin", "adminpw123"), true);
   assert.equal(accounts.createUser("admin", "alice", "pw123456").ok, true);
@@ -179,6 +277,9 @@ test("setProviders 接受 bilibili（cookie 可选，不回显）", () => {
   assert.equal(pub[0].label, "我的 B 站");
   assert.ok(!("cookie" in pub[0]), "cookie 不得回显");
   assert.equal(pub[1].label, "哔哩哔哩");
+  // 内存中的 provider 也不再携带 cookie
+  const raw = accounts.getUser("alice")!.providers.get(pub[0].id) as unknown as Record<string, unknown>;
+  assert.ok(!("cookie" in raw), "服务端不得保存 B 站凭证");
 });
 
 test("setProviders 仍拒绝未知 kind", () => {
@@ -189,20 +290,30 @@ test("setProviders 仍拒绝未知 kind", () => {
   assert.equal(res.ok, false);
 });
 
-test("upsertBilibiliCookie 新建/更新 provider 且不回显 cookie", () => {
-  const accounts = new UserAccounts();
-  accounts.initAdmin("admin", "adminpw123");
-  accounts.createUser("admin", "carol", "pw123456");
-  const created = accounts.upsertBilibiliCookie("carol", "SESSDATA=abc; bili_jct=xyz", "测试用户");
-  assert.equal(created.ok, true);
-  if (created.ok) assert.match(created.provider.label, /哔哩哔哩·测试用户/);
-  const updated = accounts.upsertBilibiliCookie("carol", "SESSDATA=new; bili_jct=xyz");
-  assert.equal(updated.ok, true);
-  const pub = accounts.listProviders("carol");
-  assert.equal(pub.length, 1, "重复登录应更新同一 provider 而非新增");
-  assert.ok(!("cookie" in pub[0]), "cookie 不得回显");
-  const bad = accounts.upsertBilibiliCookie("carol", "foo=bar");
-  assert.equal(bad.ok, false);
+test("加载旧版 users.json 时丢弃已落盘的 B 站 cookie", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const dir = mkdtempSync(path.join(tmpdir(), "syncframe-cred-"));
+  writeFileSync(
+    path.join(dir, "users.json"),
+    JSON.stringify({
+      version: 1,
+      users: [
+        {
+          username: "old",
+          salt: "s",
+          hash: "h",
+          role: "user",
+          providers: [{ id: "p1", kind: "bilibili", label: "B站", cookie: "SESSDATA=legacy" }],
+        },
+      ],
+    }),
+  );
+  const accounts = new UserAccounts(dir);
+  assert.equal(accounts.listProviders("old").length, 1);
+  const raw = accounts.getUser("old")!.providers.get("p1") as unknown as Record<string, unknown>;
+  assert.ok(!("cookie" in raw), "旧版落盘的 B 站凭据必须在加载时丢弃");
 });
 
 // ── Bilibili 扫码登录：Set-Cookie 提取 ───────────────────────
@@ -286,4 +397,31 @@ test("grant 对 bilibili 条目调用 resolve 回调（流地址由服务端生�
   });
   assert.equal(resolveCalls, 0);
   assert.equal(cached.cached, true);
+});
+
+test("grant 缓存按凭证变体隔离，且不泄漏内部字段", async () => {
+  const { registry, roomId, host } = makeHost();
+  const { mediaId } = registry.registerMedia(roomId, host, "", { name: "测试视频", size: 0 }, [], {
+    provider: "哔哩哔哩",
+    bilibili: { bvid: "BV1xx411c7mD", cid: 123456, aid: 170001 },
+  }) as { mediaId: string };
+
+  const resolveAs = (tag: string) => () =>
+    Promise.resolve({ url: `/stream?ticket=${tag}`, name: "n", size: 0, audioUrl: `/a?ticket=${tag}` });
+
+  const anon = await registry.grant(roomId, mediaId, host, resolveAs("anon"), "anon");
+  const bound = await registry.grant(roomId, mediaId, host, resolveAs("bound"), "fp1234");
+  assert.ok(anon && bound);
+  assert.match(anon.url, /anon/);
+  assert.match(bound.url, /bound/, "切换凭证后必须重新解析，不能复用匿名结果");
+  assert.equal(bound.cached, false);
+
+  // 同变体才复用
+  const again = await registry.grant(roomId, mediaId, host, resolveAs("other"), "fp1234");
+  assert.ok(again);
+  assert.match(again.url, /bound/);
+  assert.equal(again.cached, true);
+
+  // 内部缓存时间戳 at 不得出现在响应里
+  assert.ok(!("at" in (bound as unknown as Record<string, unknown>)), "内部字段 at 不应外泄");
 });

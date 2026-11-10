@@ -25,7 +25,9 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     volumes:
-      # 账户（含 provider 凭据）与房间持久化；含敏感凭据，勿挂载到公共目录
+      # 账户（含 OpenList 凭据）与房间持久化；含敏感凭据，勿挂载到公共目录。
+      # 容器以 node（uid 1000）运行：首次部署前需 `mkdir -p data && sudo chown -R 1000:1000 data`，
+      # 否则会因无写权限导致账户/房间无法落盘。
       - ./data:/app/data
     ports:
       - "7300:8787"

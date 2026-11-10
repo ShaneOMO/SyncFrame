@@ -18,7 +18,7 @@
  * - viewer 令牌注册媒体 → 403；未知/过期令牌 → 401；URL 中的 sign 参数不回显给非授权路径。
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 
@@ -92,12 +92,30 @@ export interface GrantResult {
   size: number;
   expiresInSec: number;
   cached: boolean;
+  /** B 站独立音轨地址（直连或反代）。 */
+  audioUrl?: string;
+  /** 直连不可用时前端回落的地址。 */
+  fallbackUrl?: string;
+  fallbackAudioUrl?: string;
+  /** true = 浏览器直连（服务器不耗带宽）。 */
+  direct?: boolean;
+  /** true = 本次按匿名解析（未带凭证），画质受 B 站匿名上限限制。 */
+  anonymous?: boolean;
 }
 
-interface GrantCacheEntry {
+/** resolve 回调返回的媒体地址集合（B 站需要音轨与回落地址）。 */
+interface ResolvedMedia {
   url: string;
   name: string;
   size: number;
+  audioUrl?: string;
+  fallbackUrl?: string;
+  fallbackAudioUrl?: string;
+  direct?: boolean;
+  anonymous?: boolean;
+}
+
+interface GrantCacheEntry extends ResolvedMedia {
   at: number;
 }
 
@@ -163,7 +181,11 @@ export class RoomRegistry {
     }
   }
 
-  /** 原子落盘（tmp + rename）；未配置 dataDir 时为无操作。只写非敏感摘要 + 映射，凭据不入此文件。 */
+  /**
+   * 原子落盘（tmp + rename，权限 0600）；未配置 dataDir 时为无操作。
+   * 注意：为支持重启后房主/成员用原令牌恢复，成员令牌会随房间一起持久化
+   * （不含任何 B 站凭据）；该文件因此同样需要保持私有。
+   */
   private save(): void {
     if (!this.file) return;
     try {
@@ -179,8 +201,10 @@ export class RoomRegistry {
             members: [...r.members.entries()],
           })),
         }),
+        { mode: 0o600 },
       );
       renameSync(tmp, this.file);
+      chmodSync(this.file, 0o600);
     } catch (err) {
       console.warn(`[store] 房间落盘失败: ${err instanceof Error ? err.message : err}`);
     }
@@ -485,26 +509,29 @@ export class RoomRegistry {
     roomId: string,
     mediaId: string,
     member: MemberRecord,
-    resolve: (entry: MediaEntry) => Promise<{ url: string; name: string; size: number }>,
+    resolve: (entry: MediaEntry) => Promise<ResolvedMedia>,
+    /** 缓存变体（如 B 站凭证指纹）：同一成员切换凭证后不复用旧结果。 */
+    variant = "",
   ): Promise<GrantResult | null> {
     const room = this.rooms.get(roomId);
     if (!room) return null;
     const entry = room.media.get(mediaId);
     if (!entry) return null;
-    const cacheKey = `${member.clientId}:${mediaId}`;
+    const cacheKey = `${member.clientId}:${mediaId}:${variant}`;
     const cached = this.grantCache.get(cacheKey);
     if (cached && cached.at > this.now() - GRANT_CACHE_MS) {
-      return { url: cached.url, name: cached.name, size: cached.size, expiresInSec: GRANT_TTL_SEC, cached: true };
+      const { at: _at, ...rest } = cached;
+      return { ...rest, expiresInSec: GRANT_TTL_SEC, cached: true };
     }
     // 直链 provider：地址即注册值，无需解析；私有 OpenList provider 的解析由调用方按 providerOwner 完成。
-    const resolved = entry.directUrl !== undefined
+    const resolved: ResolvedMedia = entry.directUrl !== undefined
       ? { url: entry.directUrl, name: entry.name, size: entry.size }
       : await resolve(entry);
     this.grantCache.set(cacheKey, { ...resolved, at: this.now() });
     room.lastActiveAt = this.now();
     // 审计不记录 URL/路径。
     this.audit({ roomId, action: "media:grant", clientId: member.clientId, mediaId });
-    return { url: resolved.url, name: resolved.name, size: resolved.size, expiresInSec: GRANT_TTL_SEC, cached: false };
+    return { ...resolved, expiresInSec: GRANT_TTL_SEC, cached: false };
   }
 
   private readonly grantCache = new Map<string, GrantCacheEntry>();

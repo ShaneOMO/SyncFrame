@@ -165,7 +165,7 @@
       <section data-pane="providers">
         <div class="pane-head">
           <h1>视频 Provider</h1>
-          <p>管理你自己的 OpenList 网盘与哔哩哔哩凭据；凭据只存服务端，创建房间后即可在「添加影片」里浏览媒体库。</p>
+          <p>管理你自己的 OpenList 网盘；B 站凭证只保存在本浏览器，服务器不会保存。</p>
         </div>
 
         <h2 class="section-title">已配置（<span data-provider-count>0</span>）</h2>
@@ -175,7 +175,7 @@
         <div class="add-form">
           <select data-kind>
             <option value="openlist">OpenList（自建网盘）</option>
-            <option value="bilibili">哔哩哔哩（可选 SESSDATA，画质更高）</option>
+            <option value="bilibili">哔哩哔哩（凭证保存在本浏览器）</option>
           </select>
           <div data-openlist-fields>
             <input data-label type="text" maxlength="24" placeholder="名称（如：家里 OpenList）" />
@@ -184,10 +184,10 @@
             <input data-password type="password" maxlength="64" placeholder="OpenList 密码" autocomplete="new-password" />
           </div>
           <div data-bilibili-fields hidden>
-            <input data-bililabel type="text" maxlength="24" placeholder="名称（如：我的 B 站）" />
-            <input data-bilicookie type="text" placeholder="SESSDATA cookie（可选，留空则匿名；推荐扫码登录）" autocomplete="off" />
+            <p class="provider-hint" data-bili-cred-status></p>
             <div class="bili-login">
-              <button data-bili-qr type="button">扫码登录 B 站</button>
+              <button data-bili-qr type="button">扫码绑定 B 站</button>
+              <button data-bili-clear type="button">清除本浏览器凭证</button>
               <canvas data-bili-qr-canvas width="180" height="180" hidden></canvas>
               <p class="provider-hint" data-bili-qr-status></p>
             </div>
