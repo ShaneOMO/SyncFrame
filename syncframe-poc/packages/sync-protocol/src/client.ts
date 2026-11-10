@@ -13,7 +13,7 @@
  */
 
 import { ClockSync } from "./clock.ts";
-import { computeTarget, isImmediateAction, isNewerState, planCorrection } from "./follower.ts";
+import { computeTarget, isImmediateAction, isNewerState, planCorrection, shouldCorrectNow } from "./follower.ts";
 import type { MediaMeta, Role, RoomState, Roster, ServerMessage } from "./types.ts";
 
 /** 媒体适配器：真实播放器（MoviElement）与 VirtualMediaClock 都实现它。 */
@@ -29,6 +29,11 @@ export interface MediaAdapter {
   load?(mediaId: string, meta: MediaMeta | null): Promise<void> | void;
   /** 当前是否已加载媒体（心跳/命令前检查）。 */
   hasMedia?(): boolean;
+  /**
+   * 当前是否处于缓冲/加载中。
+   * 缓冲期做强 seek 会让缓冲作废、越纠越卡，因此纠偏逻辑必须能感知它。
+   */
+  isBuffering?(): boolean;
 }
 
 export interface TimerShim {
@@ -57,6 +62,12 @@ export interface SyncClientOptions {
   heartbeatMs?: number;
   /** 观众漂移检查周期（毫秒）。 */
   driftCheckMs?: number;
+  /**
+   * 硬 seek 后的冷却时间（毫秒）。默认 5000。
+   * 没有冷却时，缓冲导致的一次落后会变成"每秒 seek 一次"的风暴：
+   * seek 让缓冲作废 → 更落后 → 再 seek。冷却让播放器有一次追上的机会。
+   */
+  seekCooldownMs?: number;
   /** 时钟 ping 周期（毫秒）。Spike 取 2s 以获得密集样本。 */
   pingIntervalMs?: number;
   now?: () => number;
@@ -118,6 +129,8 @@ export class SyncClient {
   private droppedStates = 0;
   private samples = 0;
   private gesturePending = false;
+  /** 最近一次硬 seek 的时间（冷却用）。 */
+  private lastHardSeekAt = 0;
 
   constructor(opts: SyncClientOptions) {
     this.opts = opts;
@@ -402,15 +415,31 @@ export class SyncClient {
   private driftCheck(): void {
     if (!this.currentState || this.gesturePending) return;
     this.samples++;
+    const media = this.opts.media;
+    const now = (this.opts.now ?? Date.now)();
+    const cooldownMs = this.opts.seekCooldownMs ?? 5000;
+    // 暂停/缓冲/冷却期内不纠偏：此时 seek 只会让缓冲作废，越纠越卡。
+    if (
+      !shouldCorrectNow({
+        paused: media.isPaused(),
+        buffering: media.isBuffering?.() ?? false,
+        nowMs: now,
+        lastSeekAtMs: this.lastHardSeekAt,
+        cooldownMs,
+      })
+    ) {
+      return;
+    }
     const plan = planCorrection(
       this.currentState,
       this.clock.serverNow(),
-      this.opts.media.getTimeMs(),
+      media.getTimeMs(),
       { hardDriftMs: this.opts.hardDriftMs },
     );
     if (plan.kind === "seek") {
       this.corrections++;
-      this.opts.media.seek(plan.targetMs);
+      this.lastHardSeekAt = now;
+      media.seek(plan.targetMs);
     }
   }
 

@@ -6,6 +6,8 @@
  * 点选视频文件 → onPick(path, name, size) → 由 room-main 注册 mediaId 并广播 load。
  */
 
+import { iconElement } from "./icons.ts";
+
 export interface BrowseItem {
   name: string;
   path: string;
@@ -18,15 +20,6 @@ export interface SearchItem {
   parent: string;
   isDir: boolean;
   size: number;
-}
-
-/** 静态 SVG 图标（目录/文件），禁止 emoji 图标 */
-function iconSvg(name: "folder" | "file"): string {
-  const body =
-    name === "folder"
-      ? '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
-      : '<path d="M6 3h8l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M14 3v5h5"/>';
-  return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
 }
 
 export interface BrowseHandlers {
@@ -135,7 +128,7 @@ export function initBrowsePanel(handlers: BrowseHandlers): { reload: () => void 
       row.className = "browse-row";
       const icon = document.createElement("span");
       icon.className = "browse-icon";
-      icon.innerHTML = item.isDir ? iconSvg("folder") : iconSvg("file");
+      icon.append(iconElement(item.isDir ? "folder" : "file"));
       const name = document.createElement("span");
       name.className = "browse-name";
       name.textContent = item.name;

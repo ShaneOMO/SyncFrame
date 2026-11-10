@@ -23,3 +23,17 @@ export function icon(name: keyof typeof PATHS, cls = "ic"): string {
   const fillCls = p.fill ? " ic-fill" : "";
   return `<svg class="${cls}${fillCls}" viewBox="0 0 24 24" aria-hidden="true">${p.body}</svg>`;
 }
+
+/**
+ * 图标元素（DOM 形式）。用于替换模板字符串 innerHTML：
+ * PATHS 是内部静态常量，不含任何外部输入，因此这里的 innerHTML 只承载固定 SVG 片段。
+ */
+export function iconElement(name: keyof typeof PATHS, cls = "ic"): SVGSVGElement {
+  const p = PATHS[name];
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", `${cls}${p.fill ? " ic-fill" : ""}`);
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = p.body;
+  return svg;
+}

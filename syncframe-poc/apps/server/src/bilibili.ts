@@ -2,15 +2,16 @@
  * Bilibili 视频 provider（设计参考 SyncTV 的 bilibili provider）。
  *
  * 职责：
- * - 从用户输入解析 BV 号 / av 号 / bilibili 视频链接；
- * - 经服务端代理解析：view（取标题/cid）→ playurl（取可播放流地址）。
+ * - 从用户输入解析 BV 号 / av 号 / 番剧 ep/ss / bilibili 链接；
+ * - 经服务端代理解析：view（取标题/cid）→ playurl（取可播放流地址）；
  *   所有请求带桌面 UA + Referer（bilibili 对流地址校验 Referer）；
- *   可选 SESSDATA cookie（登录用户 provider 配置），未登录也可匿名播放（≤1080P）。
- * - 流地址只在服务端使用：浏览器侧统一走 /stream 反代（见 index.ts），
- *   代发 Referer/UA 并透传 Range，解决跨域与防盗链。
+ *   SESSDATA 由调用方按请求提供（前端 localStorage 持有，服务端不落盘），匿名也可播放。
+ * - 播放地址分两条路：
+ *   * 直连：mcdn 边缘节点不校验 Referer 且带 ACAO:*，浏览器可直接拉流（服务器 0 带宽）；
+ *   * 反代：其余主机（如 *.bilivideo.com）强制校验 Referer，只能走服务端 /stream（见 index.ts）。
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const API_BASE = "https://api.bilibili.com";
 const WEB_ORIGIN = "https://www.bilibili.com";
@@ -42,8 +43,10 @@ export interface BangumiEpisodeRef {
 }
 
 export interface BilibiliPlayUrl {
-  /** 最终可拉流的 mp4 地址（dash 单流或 durl 首段）。 */
+  /** 视频流地址（dash 最高画质 / durl 首段）。 */
   url: string;
+  /** 独立音轨地址（dash.audio 最高码率）。durl 音画合一时为空。 */
+  audioUrl?: string;
   /** 备用地址（dash 无；durl 多段时取首段备用）。 */
   backupUrl?: string;
   /** 流总时长（秒），用于无法取 size 时的提示。 */
@@ -52,6 +55,43 @@ export interface BilibiliPlayUrl {
   format: string;
   /** 质量描述，如 "1080P 高清"。 */
   quality: string;
+  /**
+   * 浏览器可否直连该地址（不校验 Referer 且允许跨域）。
+   * true 时由浏览器直接拉流（服务器不耗带宽）；false 时必须走 /stream 反代。
+   */
+  directOk: boolean;
+}
+
+/** 实测：mcdn 边缘节点不校验 Referer，且返回 Access-Control-Allow-Origin: *。 */
+const DIRECT_PLAYABLE_HOSTS = ["mcdn.bilivideo.cn"];
+
+/** 该地址是否可由浏览器直连（用于决定走直连还是 /stream 反代）。 */
+export function isDirectPlayableHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return DIRECT_PLAYABLE_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+  } catch {
+    return false;
+  }
+}
+
+/** 凭证指纹：仅用于内存缓存分组，不保存明文。无凭证时为 "anon"。 */
+export function credentialFingerprint(cookie?: string | null): string {
+  if (!cookie) return "anon";
+  return createHash("sha256").update(cookie).digest("hex").slice(0, 16);
+}
+
+/**
+ * 校验并规整 SESSDATA 头：只接受单个 `SESSDATA=<value>`。
+ *
+ * 注意 B 站 SESSDATA 是 URL 编码的（含 `%2C` 等），因此取值字符集必须允许 `%`；
+ * 只要排除分号与空白即可（避免把多个 cookie 拼进来）。真实值约 60-120 字符。
+ */
+export function parseSessdata(raw: string | null | undefined, maxLen = 512): string | null {
+  if (typeof raw !== "string") return null;
+  const value = raw.trim();
+  if (!value || value.length > maxLen) return null;
+  return /^SESSDATA=[^;\s]{4,256}$/.test(value) ? value : null;
 }
 
 export class BilibiliError extends Error {}
@@ -90,11 +130,12 @@ export class BilibiliClient {
   /** 匿名访问也需要 buvid3/b_nut，否则 bilibili 风控直接 412。 */
   private readonly anonCookie: string;
 
-  constructor(opts: { cookie?: string; timeoutMs?: number } = {}) {
+  constructor(opts: { cookie?: string; timeoutMs?: number; buvidSeed?: string } = {}) {
     this.cookie = opts.cookie?.trim() || undefined;
     this.timeoutMs = opts.timeoutMs ?? 15_000;
-    const buvid3 = randomUUID().replace(/-/g, "") + "infoc";
-    this.anonCookie = `buvid3=${buvid3}; b_nut=${Math.floor(Date.now() / 1000)}`;
+    // 按凭证派生的稳定 buvid3：避免每个请求换设备指纹触发风控，同时不落任何持久化状态。
+    const seed = (opts.buvidSeed ?? randomUUID()).replace(/[^a-z0-9]/gi, "");
+    this.anonCookie = `buvid3=${seed.slice(0, 32)}infoc; b_nut=${Math.floor(Date.now() / 1000)}`;
   }
 
   private async apiGet<T>(path: string, payloadKey: "data" | "result" = "data"): Promise<T> {
@@ -194,17 +235,28 @@ export class BilibiliClient {
     const timelength = Math.round((dash.timelength ?? 0) / 1000);
     const qualityOf = (id: number): string =>
       dash.support_formats?.find((f) => f.quality === id)?.new_description ?? `qn=${id}`;
-    // 1) DASH：取最高码率 video/mp4 流（浏览器端 mp4 流可直接播）。
+    // 1) DASH：取最高画质 video 流 + 独立音频流（B 站音视频分离，缺音轨会静音）。
     if (dash.dash?.video?.length) {
       const mp4Videos = dash.dash.video.filter((v) => v.codecid === 7 || !v.codecid);
       const pool = mp4Videos.length ? mp4Videos : dash.dash.video;
       const best = pool.reduce((a, b) => (b.id > a.id ? b : a));
       const url = best.baseUrl ?? best.base_url;
       if (url) {
-        return { url, timelength, format: "mp4", quality: qualityOf(best.id) };
+        const bestAudio = dash.dash.audio?.length
+          ? dash.dash.audio.reduce((a, b) => (b.id > a.id ? b : a))
+          : undefined;
+        const audioUrl = bestAudio ? (bestAudio.baseUrl ?? bestAudio.base_url) : undefined;
+        return {
+          url,
+          audioUrl,
+          timelength,
+          format: "mp4",
+          quality: qualityOf(best.id),
+          directOk: isDirectPlayableHost(url) && (!audioUrl || isDirectPlayableHost(audioUrl)),
+        };
       }
     }
-    // 2) durl（flv/mp4 分段）：取首段。
+    // 2) durl（flv/mp4 分段）：取首段。多段即音画合一但后续分片无法随机访问，保守走反代。
     if (dash.durl?.length) {
       const first = dash.durl[0];
       return {
@@ -213,6 +265,7 @@ export class BilibiliClient {
         timelength,
         format: dash.format?.toLowerCase().includes("mp4") ? "mp4" : "flv",
         quality: qualityOf(dash.quality ?? 0),
+        directOk: false,
       };
     }
     throw new BilibiliError("bilibili 未返回可播放流地址（可能需要登录 cookie）");
@@ -226,12 +279,14 @@ interface CacheEntry {
 }
 const playUrlCache = new Map<string, CacheEntry>();
 
-/** 带缓存的 playurl 解析；缓存 15 分钟。bilibili 客户端由调用方按 cookie 提供。 */
+/** 带缓存的 playurl 解析；缓存 15 分钟。key 含凭证指纹，避免跨用户复用画质结果。 */
 export function getPlayUrlCached(
   client: BilibiliClient,
   ref: { bvid?: string; cid: number; epId?: number },
+  fingerprint = "anon",
 ): Promise<BilibiliPlayUrl> {
-  const key = ref.epId ? `ep${ref.epId}:${ref.cid}` : `${ref.bvid}:${ref.cid}`;
+  const media = ref.epId ? `ep${ref.epId}:${ref.cid}` : `${ref.bvid}:${ref.cid}`;
+  const key = `${fingerprint}:${media}`;
   const hit = playUrlCache.get(key);
   if (hit && hit.at > Date.now() - PLAYURL_CACHE_MS) return hit.promise;
   const promise = client.getPlayUrl(ref);

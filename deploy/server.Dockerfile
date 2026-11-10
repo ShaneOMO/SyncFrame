@@ -20,4 +20,8 @@ ENV WEB_DIST=/app/apps/web/dist
 ENV DATA_DIR=/app/data
 EXPOSE 8787
 
+# 非 root 运行：容器被攻破时影响面更小；/app/data 需对 node 用户可写。
+RUN mkdir -p /app/data && chown -R node:node /app/data
+USER node
+
 CMD ["npx", "tsx", "apps/server/src/index.ts"]

@@ -54,6 +54,31 @@ export function planCorrection(
 }
 
 /**
+ * 周期性纠偏的闸门：三件事都不该做硬 seek。
+ *
+ * - 暂停中：seek 无意义，还会让播放器重建缓冲；
+ * - 缓冲中：seek 会让已缓冲的数据作废 → 更落后 → 再次 seek，形成死循环；
+ * - 冷却期内：上一次硬 seek 之后要给播放器一次追上的机会。
+ *
+ * 这三条缺一不可：早期只按"漂移 > 1s"判断，网络抖一下就会演变成每秒 seek 的风暴。
+ */
+export interface DriftGate {
+  paused: boolean;
+  buffering: boolean;
+  nowMs: number;
+  lastSeekAtMs: number;
+  cooldownMs: number;
+}
+
+export function shouldCorrectNow(gate: DriftGate): boolean {
+  if (gate.paused) return false;
+  if (gate.buffering) return false;
+  // 0 = 本会话还没硬 seek 过，没有冷却可言。
+  if (gate.lastSeekAtMs === 0) return true;
+  return gate.nowMs - gate.lastSeekAtMs >= gate.cooldownMs;
+}
+
+/**
  * 新到达的状态是否比本地已应用的更新。
  * 规则：mediaRevision 更大 → 更新；相等时 revision 更大 → 更新；否则丢弃（S14）。
  * mediaRevision 更小的状态永远丢弃（旧片的迟到消息）。

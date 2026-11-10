@@ -16,10 +16,10 @@ import { SyncClient, VirtualMediaClock } from "@syncframe/sync-protocol";
 import type { MediaAdapter } from "@syncframe/sync-protocol";
 import "movi-player/element/slim";
 import wasmUrl from "movi-player/movi.wasm?url";
-import { CountingHttpSource } from "./counting-source.ts";
 import { initBrowsePanel } from "./browse.ts";
 import { loadSession, clearSession } from "./session.ts";
-import { icon } from "./icons.ts";
+import { iconElement } from "./icons.ts";
+import { biliCredentialHeaders, loadBiliSessdata } from "./bili-credential.ts";
 
 const params = new URLSearchParams(location.search);
 const roomId = (params.get("room") || "").slice(0, 64);
@@ -85,12 +85,15 @@ const $ = <T extends HTMLElement>(sel: string): T => {
 };
 
 interface MoviElement extends HTMLElement {
-  sourceAdapter: unknown;
   currentTime: number;
   duration: number;
   paused: boolean;
   playbackRate: number;
+  /** 与原生媒体元素同义的只读状态（部分实现未必暴露，读取时按可选处理）。 */
+  seeking?: boolean;
+  readyState?: number;
   play(): Promise<void>;
+  pause(): void;
   load(): void;
   player: {
     getAudioTracks(): { id: number; label?: string }[];
@@ -153,12 +156,25 @@ function markPlaybackEventSuppressed(ms = 800): void {
 function wireControlForwarding(el: MoviElement): void {
   if (!showBuiltInControls) return;
   const fromUserGesture = (): boolean =>
-    Date.now() >= suppressPlaybackEventsUntil && playerReady && playerMediaId !== "";
+    Date.now() >= suppressPlaybackEventsUntil
+    && !playerReloading
+    && playerReady
+    && playerMediaId !== "";
   el.addEventListener("play", () => {
+    if (playerReloading) return;
+    wantPlay = true;
     if (fromUserGesture()) void client.hostPlay();
   });
   el.addEventListener("pause", () => {
-    if (fromUserGesture()) client.hostPause();
+    // 换源/重载自身会触发 pause：不代表用户意图，也不该改变"应播放"状态。
+    if (playerReloading) return;
+    wantPlay = false;
+    if (!fromUserGesture()) return;
+    // 换源/重载会把位置打回 0：这种"位置归零的暂停"不是用户操作，
+    // 上报出去会让全房间跳回开头并暂停。
+    const posMs = (el.currentTime || 0) * 1000;
+    if (posMs < 1000 && lastConfirmedPosMs > 5000) return;
+    client.hostPause();
   });
   el.addEventListener("ratechange", () => {
     if (fromUserGesture()) client.hostRate(el.playbackRate || 1);
@@ -174,21 +190,176 @@ interface GrantResponse {
   size: number;
   expiresInSec: number;
   cached: boolean;
+  /** B 站独立音轨（无独立音轨时为 undefined，例如 durl 音画合一）。 */
+  audioUrl?: string;
+  /** 直连不可用或失败时的服务端反代地址。 */
+  fallbackUrl?: string;
+  fallbackAudioUrl?: string;
+  /** true = url 为 B 站 CDN 直链（浏览器直拉，不占服务器带宽）。 */
+  direct?: boolean;
+  /** true = 本次按匿名解析（未绑定 B 站凭证），画质受匿名上限限制。 */
+  anonymous?: boolean;
 }
 
-let playerSource: CountingHttpSource | null = null;
 let playerMediaId = "";
 let playerReady = false;
-let grantExpiresAt = 0;
 /** 至少成功开始播放过一次：区分「真实签名/网络错误」与「初始解码失败（如 stub 假数据）」。 */
 let hasStartedPlayback = false;
 /** 恢复中标志：防止 error 事件循环触发 recoverMedia。 */
 let recovering = false;
+/** 直连探测失败过一次后，本次会话后续 grant 直接走反代，避免反复超时。 */
+let preferProxy = false;
+/** 当前播放源是否为直连（直连播放失败时据此切回反代）。 */
+let currentSourceDirect = false;
+/** 播放器是否处于缓冲/加载中（供同步纠偏避让）。 */
+let mediaBuffering = false;
+/**
+ * 换源/重载窗口内为 true：此时播放器会自发 pause/play/seek，
+ * 这些事件不是用户操作，绝不能上报成房主命令（否则会把全房间拉回开头）。
+ */
+let playerReloading = false;
+/** 最近一次确认过的播放位置（用于识别"重载导致位置归零"的假暂停）。 */
+let lastConfirmedPosMs = 0;
+/** 期望播放（供换源/重载就绪后自动续播）。 */
+let wantPlay = false;
+
+/**
+ * 把媒体地址交给播放器原生流式源（src / <source>），而不是自定义 sourceAdapter。
+ *
+ * 关键：内置 HttpSource 是单连接流式下载（首包 4MB）；自定义 adapter 会让播放器按
+ * 512KB 一块、每块一次 HTTP 请求地拉取，一个视频几百次请求，且每块都要等一次往返，
+ * 一旦网络抖动就落后 → 触发纠偏 → 缓冲作废 → 更卡。
+ *
+ * 分离音轨用 <source kind="audio">：B 站 DASH 音视频本就是两条流，
+ * 播放器内部会自己管理两条流的时间轴，不需要我们再手工对齐。
+ */
+function setPlayerSources(videoUrl: string, audioUrl?: string): void {
+  const el = playerRef.current;
+  // 裸 src 会覆盖并隐藏 <source> 子节点，必须清掉。
+  el.removeAttribute("src");
+  const nodes: HTMLSourceElement[] = [];
+  const v = document.createElement("source");
+  v.setAttribute("src", videoUrl);
+  v.setAttribute("type", "video/mp4");
+  nodes.push(v);
+  if (audioUrl) {
+    const a = document.createElement("source");
+    a.setAttribute("src", audioUrl);
+    a.setAttribute("type", "audio/mp4");
+    a.setAttribute("kind", "audio");
+    nodes.push(a);
+  }
+  // 一次性替换：元素用 MutationObserver 监听 <source> 变化并自动重载，
+  // 分批增删会被当成多次变更，因此这里合并成一次。
+  el.replaceChildren(...nodes);
+}
+
+/** 缓冲/就绪/位置跟踪：同步纠偏据此避让，换源后据此自动续播。 */
+function bindPlayerEvents(el: MoviElement): void {
+  const buffering = (): void => {
+    mediaBuffering = true;
+  };
+  el.addEventListener("waiting", buffering);
+  el.addEventListener("stalled", buffering);
+  el.addEventListener("seeking", buffering);
+  el.addEventListener("timeupdate", () => {
+    const ms = (el.currentTime || 0) * 1000;
+    if (ms > 0) lastConfirmedPosMs = ms;
+  });
+  el.addEventListener("canplay", () => {
+    mediaBuffering = false;
+    // 换源/重载完成：恢复"应该播放"的状态，避免重载后停在暂停。
+    if (wantPlay && el.paused) void el.play().catch(() => {});
+  });
+  el.addEventListener("playing", () => {
+    mediaBuffering = false;
+    playerReloading = false;
+  });
+  el.addEventListener("seeked", () => {
+    mediaBuffering = false;
+  });
+}
+
+/**
+ * 直连可用性探测：mcdn 在部分网络/运营商不可达，失败则回落服务端反代。
+ *
+ * 只用「简单请求」探测：带 Range 头会触发跨域预检（OPTIONS），而 mcdn 不一定支持，
+ * 会导致直连被误判为不可用、全部流量压回服务器。这里不带任何自定义头，读到响应头即取消。
+ */
+async function probeDirect(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    res.body?.cancel().catch(() => {});
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 按 grant 结果挑实际播放地址：直连优先（带宽走用户），失败回落反代。 */
+async function applyGrant(info: GrantResponse): Promise<{ url: string; audioUrl?: string; direct: boolean }> {
+  if (info.direct && info.fallbackUrl && !preferProxy) {
+    if (await probeDirect(info.url)) return { url: info.url, audioUrl: info.audioUrl, direct: true };
+    preferProxy = true;
+    setStatus("B 站直连不可用，已切换到服务端代理（画质不变，占用服务器带宽）", true);
+  }
+  return {
+    url: info.fallbackUrl ?? info.url,
+    audioUrl: info.fallbackAudioUrl ?? info.audioUrl,
+    direct: false,
+  };
+}
+
+/** 匿名解析 B 站视频时的提示（绑定凭证后画质更高；凭证只存本浏览器）。 */
+let biliHintShown = false;
+function showBiliCredentialHint(): void {
+  if (biliHintShown || loadBiliSessdata()) return;
+  biliHintShown = true;
+  const wrap = document.createElement("div");
+  wrap.className = "modal";
+  const card = document.createElement("div");
+  card.className = "modal-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", "B 站未绑定");
+  const head = document.createElement("div");
+  head.className = "modal-head";
+  const title = document.createElement("h2");
+  title.textContent = "未绑定 B 站账号，播放将受限制";
+  head.appendChild(title);
+  const body = document.createElement("div");
+  body.className = "add-body";
+  const hint = document.createElement("p");
+  hint.className = "provider-hint";
+  hint.textContent =
+    "当前以匿名身份解析 B 站视频：画质上限 720P，番剧与会员内容可能无法播放。" +
+    "绑定后凭证只保存在本浏览器，服务器不会保存，也不会共享给其他人。";
+  const actions = document.createElement("div");
+  actions.className = "row";
+  const go = document.createElement("button");
+  go.className = "primary";
+  go.textContent = "去绑定 B 站账号";
+  go.addEventListener("click", () => {
+    location.href = "/settings.html";
+  });
+  const skip = document.createElement("button");
+  skip.textContent = "继续观看（受限）";
+  skip.addEventListener("click", () => wrap.remove());
+  actions.append(go, skip);
+  body.append(hint, actions);
+  card.append(head, body);
+  wrap.appendChild(card);
+  wrap.addEventListener("click", (ev) => {
+    if (ev.target === wrap) wrap.remove();
+  });
+  document.body.appendChild(wrap);
+}
 
 /** P3 受控媒体链路：mediaId →（成员令牌）→ 短期媒体地址。 */
 async function fetchGrant(mediaId: string): Promise<GrantResponse> {
   const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/media/${encodeURIComponent(mediaId)}/grant`, {
-    headers: authHeaders,
+    // B 站凭证由本浏览器 localStorage 提供，服务端只在本次请求内使用。
+    headers: { ...authHeaders, ...biliCredentialHeaders() },
   });
   if (!res.ok) {
     if (res.status === 401) {
@@ -202,7 +373,34 @@ async function fetchGrant(mediaId: string): Promise<GrantResponse> {
   return (await res.json()) as GrantResponse;
 }
 
-/** 冷启动换源：切换视频/错误恢复共用。返回新挂载的 source（调用方负责设置 sourceAdapter）。 */
+/**
+ * 换源后恢复播放位置与播放状态。
+ *
+ * 换源（`<source>` 变化）会让播放器整个重载并从 0 开始、处于暂停状态，
+ * 因此必须做两件事：把位置落回去，并按"原本是否在播"决定是否继续播。
+ * 重载是异步的，所以立即试一次，再在 loadedmetadata / canplay 各兜一次。
+ */
+function resumeAfterReload(posMs: number, shouldPlay: boolean): void {
+  const el = playerRef.current;
+  wantPlay = shouldPlay;
+  let done = false;
+  const apply = (): void => {
+    if (done) return;
+    done = true;
+    markPlaybackEventSuppressed(1500);
+    if (posMs > 0) el.currentTime = posMs / 1000;
+    if (shouldPlay) {
+      void el.play().catch(() => {
+        gestureOverlay.classList.add("show");
+      });
+    }
+  };
+  apply();
+  el.addEventListener("loadedmetadata", apply, { once: true });
+  el.addEventListener("canplay", apply, { once: true });
+}
+
+/** 冷启动换源：切换视频/错误恢复共用。 */
 function mountFreshPlayer(): void {
   const old = playerRef.current;
   const fresh = old.cloneNode(false) as HTMLElement;
@@ -211,6 +409,7 @@ function mountFreshPlayer(): void {
   playerRef.current.setAttribute("wasmurl", wasmUrl);
   if (showBuiltInControls) playerRef.current.setAttribute("controls", "");
   wireControlForwarding(playerRef.current);
+  bindPlayerEvents(playerRef.current);
   // 播放错误（含签名 403/网络断）→ 用新凭证重建源并恢复到原位置（S12）。
   // 仅在已就绪且开始播放过才自动恢复；初始加载阶段的解码错误（如 stub 假数据）只提示不恢复。
   playerRef.current.addEventListener("error", () => {
@@ -221,8 +420,14 @@ function mountFreshPlayer(): void {
       return;
     }
     recovering = true;
+    // 直连失败（mcdn 端口被拦等）→ 本次会话改为走服务端反代后重试。
+    if (currentSourceDirect) {
+      preferProxy = true;
+      setStatus("B 站直连失败，切换到服务端代理后重试…", true);
+    } else {
+      setStatus("媒体加载/播放出错（可能是签名过期），正在用新凭证恢复…", true);
+    }
     setMediaBadge("媒体错误，正在恢复…", "fail");
-    setStatus("媒体加载/播放出错（可能是签名过期），正在用新凭证恢复…", true);
     void recoverMedia().finally(() => {
       recovering = false;
     });
@@ -240,38 +445,19 @@ async function recoverMedia(): Promise<void> {
     const posMs = (playerRef.current.currentTime || 0) * 1000;
     const wasPaused = playerRef.current.paused;
     const info = await fetchGrant(playerMediaId);
-    grantExpiresAt = Date.now() + info.expiresInSec * 1000;
+    const src = await applyGrant(info);
     mountFreshPlayer();
-    // 直链条目 size=0：传 null 让 CountingHttpSource 走 HEAD/Range 探测真实大小。
-    playerSource = new CountingHttpSource(info.url, info.size > 0 ? info.size : null);
-    playerRef.current.sourceAdapter = playerSource as never;
-    // 恢复路径直接改 currentTime：抑制随后的 seeked，避免误广播。
-    markPlaybackEventSuppressed(1000);
-    playerRef.current.currentTime = posMs / 1000;
+    currentSourceDirect = src.direct;
+    playerReloading = true;
+    setPlayerSources(src.url, src.audioUrl);
+    resumeAfterReload(posMs, !wasPaused);
     setMediaBadge(`就绪: ${info.name}`, "ok");
-    setStatus(`已用新凭证恢复: ${info.name}（回到 ${fmtTime(posMs)}）`);
-    if (!wasPaused) {
-      markPlaybackEventSuppressed(800);
-      void playerRef.current.play().catch(() => {
-        gestureOverlay.classList.add("show");
-      });
-    }
+    setStatus(`已重新获取地址并恢复播放: ${info.name}（回到 ${fmtTime(posMs)}）`);
   } catch (err) {
+    // 恢复失败：解除换源闸门，否则房主的播放/暂停将永远无法上报。
+    playerReloading = false;
     setMediaBadge("媒体恢复失败", "fail");
     setStatus(`媒体恢复失败: ${err instanceof Error ? err.message : err}`, true);
-  }
-}
-
-/** S12 主动续签：凭证剩余不足 2 分钟时静默换新 URL（同源同字节，Range 拉流无感）。 */
-async function refreshGrantIfNeeded(): Promise<void> {
-  if (!playerReady || !playerMediaId || !playerSource) return;
-  if (grantExpiresAt - Date.now() > 120_000) return;
-  try {
-    const info = await fetchGrant(playerMediaId);
-    grantExpiresAt = Date.now() + info.expiresInSec * 1000;
-    playerSource.url = info.url;
-  } catch (err) {
-    setStatus(`媒体凭证续签失败: ${err instanceof Error ? err.message : err}`, true);
   }
 }
 
@@ -283,10 +469,16 @@ function makePlayerAdapter(): MediaAdapter {
     play: () => {
       // 应用远端/本地同步状态：抑制随后的事件，避免回声广播。
       markPlaybackEventSuppressed(500);
-      return playerRef.current.play();
+      wantPlay = true;
+      const el = playerRef.current;
+      // 换源瞬间播放器还没就绪：交给 canplay 自动续播，
+      // 否则 play() 会以"未加载"失败，被上层误判为"自动播放被拦截"而永久停用纠偏。
+      if ((el.readyState ?? 4) < 2) return Promise.resolve();
+      return el.play();
     },
     pause: () => {
       markPlaybackEventSuppressed(500);
+      wantPlay = false;
       playerRef.current.pause();
     },
     seek: (ms) => {
@@ -298,24 +490,29 @@ function makePlayerAdapter(): MediaAdapter {
       playerRef.current.playbackRate = r;
     },
     hasMedia: () => playerReady,
+    isBuffering: () => mediaBuffering,
     load: async (mediaId) => {
       setMediaBadge("加载中…", "loading");
       setStatus("正在获取媒体访问凭证…");
       const info = await fetchGrant(mediaId);
-      grantExpiresAt = Date.now() + info.expiresInSec * 1000;
+      const src = await applyGrant(info);
       mountFreshPlayer();
-      // 直链条目 size=0：传 null 让 CountingHttpSource 走 HEAD/Range 探测真实大小。
-      playerSource = new CountingHttpSource(info.url, info.size > 0 ? info.size : null);
-      playerRef.current.sourceAdapter = playerSource as never;
+      currentSourceDirect = src.direct;
+      // 换源期间屏蔽控件事件转发：重载自发的 pause/seek 不是用户操作。
+      playerReloading = true;
+      setPlayerSources(src.url, src.audioUrl);
       playerMediaId = mediaId;
       playerReady = true;
       hasStartedPlayback = false;
+      lastConfirmedPosMs = 0;
+      wantPlay = false;
       setMediaBadge(`就绪: ${info.name}`, "ok");
       setStatus(
         info.size > 0
-          ? `已载入: ${info.name}（${(info.size / 1024 / 1024).toFixed(1)} MiB，凭证 ${Math.round(info.expiresInSec / 60)} 分钟）`
-          : `已载入: ${info.name}（凭证 ${Math.round(info.expiresInSec / 60)} 分钟）`,
+          ? `已载入: ${info.name}（${(info.size / 1024 / 1024).toFixed(1)} MiB）`
+          : `已载入: ${info.name}`,
       );
+      if (info.anonymous) showBiliCredentialHint();
       refreshMediaList();
     },
   };
@@ -353,7 +550,12 @@ function fmtTimeShort(ms: number): string {
 
 // ── 初始化 ────────────────────────────────────────────────
 
-$("#roomBadge").innerHTML = `房间 <b>${roomId}</b>${mode === "clock" ? " · clock" : ""}`;
+const roomBadgeEl = $("#roomBadge");
+roomBadgeEl.textContent = "房间 ";
+const roomBadgeId = document.createElement("b");
+roomBadgeId.textContent = roomId;
+roomBadgeEl.appendChild(roomBadgeId);
+if (mode === "clock") roomBadgeEl.appendChild(document.createTextNode(" · clock"));
 const roleBadge = $("#roleBadge");
 roleBadge.textContent = role === "host" ? "房主" : "观众";
 roleBadge.className = `badge ${role}`;
@@ -453,9 +655,15 @@ const client = new SyncClient({
       else guestCount++;
       const chip = document.createElement("span");
       chip.className = "chip" + (m.id === clientId ? " me" : "");
-      const crown = m.role === "host" ? `<span class="crown">${icon("crown", "ic")}</span>` : "";
-      chip.innerHTML = `${crown}<span></span>`;
-      chip.querySelector("span")!.textContent = m.name;
+      if (m.role === "host") {
+        const crown = document.createElement("span");
+        crown.className = "crown";
+        crown.appendChild(iconElement("crown", "ic"));
+        chip.appendChild(crown);
+      }
+      const chipName = document.createElement("span");
+      chipName.textContent = m.name;
+      chip.appendChild(chipName);
       if (m.id === clientId) {
         // 点击自己的昵称 → 账户设置页（provider 管理）。
         chip.title = "账户设置（provider 管理）";
@@ -525,6 +733,8 @@ if (mode === "player" && role === "host") {
           "Content-Type": "application/json",
           ...authHeaders,
           ...(localUser ? { "X-User-Token": localUser.token } : {}),
+          // B 站条目：凭证随请求一次性传入（服务端即用即弃），番剧解析也需要。
+          ...biliCredentialHeaders(),
         },
         body: JSON.stringify(payload),
       });
@@ -557,9 +767,9 @@ if (mode === "player" && role === "host") {
     });
   });
 
-  // B 站：免配置匿名，或用户已配置的 bilibili provider（带 SESSDATA）
+  // B 站：凭证由本浏览器提供（未绑定则匿名），服务端即用即弃
   $("#addBiliBtn").addEventListener("click", () => {
-    const provider = ($("#biliProviderSel") as HTMLSelectElement).value;
+    const provider = ($("#biliProviderSel") as HTMLSelectElement).value || "bilibili";
     const url = ($("#addBiliUrl") as HTMLInputElement).value.trim();
     if (!url) {
       setAddMsg("请填写 BV 号 / av 号 / 视频或番剧链接（番剧建议先扫码绑定 B 站）");
@@ -590,12 +800,20 @@ if (mode === "player" && role === "host") {
   // 拉取本人 provider：填充 B 站来源 / OpenList provider 下拉，并按需挂载媒体库浏览。
   void (async () => {
     const providers = await fetchMyProviders();
+    // B 站凭证由本浏览器提供；服务端不再区分 provider，下拉只反映本地绑定状态。
     const biliSel = $("#biliProviderSel") as HTMLSelectElement;
     biliSel.textContent = "";
-    const optAnon = document.createElement("option");
-    optAnon.value = "bilibili";
-    optAnon.textContent = "免配置（匿名，无需 SESSDATA）";
-    biliSel.appendChild(optAnon);
+    const optBili = document.createElement("option");
+    optBili.value = "bilibili";
+    optBili.textContent = loadBiliSessdata() ? "使用本浏览器绑定的 B 站账号" : "匿名（未绑定，画质上限 480P）";
+    biliSel.appendChild(optBili);
+    if (!loadBiliSessdata()) {
+      const hint = document.createElement("option");
+      hint.value = "";
+      hint.disabled = true;
+      hint.textContent = "（扫码绑定后画质更高：账户设置 → 哔哩哔哩）";
+      biliSel.appendChild(hint);
+    }
     const pathSel = $("#addProvider") as HTMLSelectElement;
     pathSel.textContent = "";
     const browseSel = $("#browseProvider") as HTMLSelectElement;
@@ -605,7 +823,7 @@ if (mode === "player" && role === "host") {
     for (const p of providers.filter((x) => x.kind === "bilibili")) {
       const o = document.createElement("option");
       o.value = `bilibili:${p.id}`;
-      o.textContent = `${p.label}（已配置 SESSDATA）`;
+      o.textContent = `${p.label}（使用本浏览器 B 站凭证）`;
       biliSel.appendChild(o);
     }
     for (const p of openlist) {
@@ -678,7 +896,10 @@ if (mode === "player" && role === "host") {
   })();
 }
 
-if (mode === "player") wireControlForwarding(playerRef.current);
+if (mode === "player") {
+  wireControlForwarding(playerRef.current);
+  bindPlayerEvents(playerRef.current);
+}
 
 // ── 播放列表（mediaId 不透明映射 + 字幕授权验证入口）────────────────────
 
@@ -776,6 +997,7 @@ function tick(): void {
       `${state?.paused === false ? "播放中" : "已暂停"} · ${state?.rate ?? 1}×`;
   }
   // player 模式：时间与进度由 movi-player 内置控件呈现，无需同步到自定义 DOM。
+  // B 站分离音轨由播放器内部的 <source kind="audio"> 自行对齐，这里不做任何手工同步。
 
   // 连接徽标 + 观众状态条
   const connBadge = $("#connBadge");
@@ -809,7 +1031,8 @@ function tick(): void {
 client.connect();
 window.addEventListener("pagehide", () => client.disconnect());
 window.setInterval(tick, 1000);
-if (mode === "player") window.setInterval(() => void refreshGrantIfNeeded(), 20_000);
+// 不再定时换票：票据有效期 12h，B 站 CDN 地址约 2h；到期由 error → recoverMedia 处理。
+// 定时换源会让播放器重载、位置归零并暂停，是"播一会儿跳回开头"的根因。
 if (mode === "player") window.setInterval(() => void refreshMediaList(), 15_000);
 void refreshMediaList();
 void tick();

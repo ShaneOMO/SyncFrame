@@ -10,6 +10,7 @@ import {
   computeTarget,
   isNewerState,
   planCorrection,
+  shouldCorrectNow,
 } from "../../packages/sync-protocol/src/follower.ts";
 import { parseClientMessage } from "../../packages/sync-protocol/src/validate.ts";
 import { VirtualMediaClock } from "../../packages/sync-protocol/src/virtual-clock.ts";
@@ -102,6 +103,27 @@ test("漂移纠正：force（加入/重连/命令）即使在阈值内也 seek �
   const plan = planCorrection(s, 500 + 100, 30_000 + 80, { force: true });
   assert.equal(plan.kind, "seek");
   assert.ok(Math.abs(plan.driftMs) <= 1000, "阈值内 force 不触发大幅跳转");
+});
+
+// ── 周期纠偏闸门（暂停 / 缓冲 / 冷却）─────────────────────
+test("纠偏闸门：暂停时不纠偏", () => {
+  assert.equal(shouldCorrectNow({ paused: true, buffering: false, nowMs: 10_000, lastSeekAtMs: 0, cooldownMs: 5000 }), false);
+});
+
+test("纠偏闸门：缓冲时不纠偏（避免 seek→缓冲作废→更卡的死循环）", () => {
+  assert.equal(shouldCorrectNow({ paused: false, buffering: true, nowMs: 10_000, lastSeekAtMs: 0, cooldownMs: 5000 }), false);
+});
+
+test("纠偏闸门：冷却期内不纠偏，冷却结束后恢复", () => {
+  const base = { paused: false, buffering: false, lastSeekAtMs: 10_000, cooldownMs: 5000 };
+  assert.equal(shouldCorrectNow({ ...base, nowMs: 13_000 }), false, "冷却中");
+  assert.equal(shouldCorrectNow({ ...base, nowMs: 15_000 }), true, "冷却结束");
+  assert.equal(shouldCorrectNow({ ...base, nowMs: 20_000 }), true, "冷却结束更久");
+});
+
+test("纠偏闸门：本会话从未硬 seek 过时立即可纠偏", () => {
+  assert.equal(shouldCorrectNow({ paused: false, buffering: false, nowMs: 1_000, lastSeekAtMs: 0, cooldownMs: 5000 }), true);
+  assert.equal(shouldCorrectNow({ paused: false, buffering: false, nowMs: Date.now(), lastSeekAtMs: 0, cooldownMs: 5000 }), true);
 });
 
 // ── isNewerState ───────────────────────────────────────────
