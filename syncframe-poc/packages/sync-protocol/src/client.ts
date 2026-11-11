@@ -78,6 +78,8 @@ export interface SyncClientOptions {
   onRoster?: (msg: Roster) => void;
   onGestureNeeded?: () => void;
   onStateApplied?: (state: RoomState) => void;
+  /** 服务端主动断开（如房间被删除，code 4003）：客户端应停止重连并按需离开。 */
+  onClosedByServer?: (code: number, reason: string) => void;
   /** 底层 socket 打开后回调（测试注入/诊断用）。 */
   onSocket?: (ws: unknown) => void;
 }
@@ -189,9 +191,17 @@ export class SyncClient {
       this.onServerMessage(msg);
     });
 
-    sock.addEventListener("close", () => {
+    sock.addEventListener("close", (ev) => {
       if (this.ws !== sock) return;
       this.stopTimers();
+      const code = (ev as CloseEvent).code ?? 0;
+      const reason = (ev as CloseEvent).reason ?? "";
+      // 服务端主动断开（房间被删除 4003 等）：不再重连，交给上层处理。
+      if (!this.closedByUs && code >= 4000 && code < 5000) {
+        this.status(`连接已被服务端关闭（${reason || `code ${code}`}）`);
+        this.opts.onClosedByServer?.(code, reason);
+        return;
+      }
       this.status("连接断开，重连中…");
       if (this.closedByUs) return;
       this.reconnects++;
