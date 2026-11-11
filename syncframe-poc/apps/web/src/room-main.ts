@@ -411,12 +411,21 @@ function mountFreshPlayer(): void {
   wireControlForwarding(playerRef.current);
   bindPlayerEvents(playerRef.current);
   // 播放错误（含签名 403/网络断）→ 用新凭证重建源并恢复到原位置（S12）。
-  // 仅在已就绪且开始播放过才自动恢复；初始加载阶段的解码错误（如 stub 假数据）只提示不恢复。
-  playerRef.current.addEventListener("error", () => {
+  // 仅在已就绪且开始播放过才自动恢复；初始加载阶段的错误只提示不恢复。
+  // 初始错误既有解码失败，也有源站/网络/跨域导致的拉流失败（两者在 error 事件里同形），按 movi 的 detail 区分提示。
+  playerRef.current.addEventListener("error", (ev) => {
     if (!playerReady || !playerMediaId || recovering) return;
     if (!hasStartedPlayback) {
-      setMediaBadge("媒体解码失败", "fail");
-      setStatus("媒体解码失败（初始载入阶段，非签名问题），请更换视频", true);
+      const detail = (ev as CustomEvent<{ message?: string }>).detail;
+      const reason = detail?.message ?? "";
+      const networkLike = /fetch|network|http|range|timeout|failed|超时/i.test(reason);
+      if (networkLike) {
+        setMediaBadge("媒体加载失败", "fail");
+        setStatus(`媒体加载失败（网络/源站/跨域错误${reason ? `：${reason.slice(0, 120)}` : ""}），请重试或更换视频`, true);
+      } else {
+        setMediaBadge("媒体解码失败", "fail");
+        setStatus("媒体解码失败（初始载入阶段，非签名问题），请更换视频", true);
+      }
       return;
     }
     recovering = true;
@@ -582,17 +591,51 @@ if (role !== "host") {
   viewerBarText.textContent = "跟随房主";
 }
 
-// 邀请行：房主默认展开，可用顶栏按钮折叠
+// 邀请行：房主默认展开，可用顶栏按钮折叠。
+// 创建时选择「不生成访问码」的房间没有邀请链接：隐藏邀请按钮，任何人凭房间号即可加入。
 const inviteRowEl = $("#inviteRow") as HTMLElement;
-$("#inviteToggle").addEventListener("click", () => inviteRowEl.classList.toggle("show"));
+const inviteToggleBtn = $("#inviteToggle") as HTMLElement;
+inviteToggleBtn.addEventListener("click", () => inviteRowEl.classList.toggle("show"));
+
+// 删除房间（仅房主可见按钮）：删除后房间立即消失，全员被踢回大厅。
+if (role === "host") {
+  const delBtn = $("#deleteRoomBtn") as HTMLButtonElement;
+  delBtn.hidden = false;
+  delBtn.addEventListener("click", () => {
+    if (!window.confirm(`确认删除房间「${roomId}」？\n删除后不可恢复，房间内的所有成员将被请出。`)) return;
+    void (async () => {
+      try {
+        const token = localUser?.token;
+        if (!token) {
+          setStatus("删除房间需要用创建房间的账户登录（右上角用户名处登录）", true);
+          return;
+        }
+        const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          setStatus(`删除失败：${body.error ?? `HTTP ${res.status}`}`, true);
+          return;
+        }
+        clearSession(roomId);
+        sessionStorage.removeItem(`syncframe-invite-${roomId}`);
+        sessionStorage.removeItem(`syncframe-hostsecret-${roomId}`);
+        location.replace("/lobby.html");
+      } catch (err) {
+        setStatus(`删除失败：${err instanceof Error ? err.message : err}`, true);
+      }
+    })();
+  });
+}
 
 // 旧版自定义控制条已由 movi-player 内置控件接管，保持隐藏（元素保留，tick/事件接线不变）。
 if (role === "host") {
   // 邀请链接展示（仅创建者浏览器会话里有邀请码；链接 = 房间号 + 邀请码）
   const invite = sessionStorage.getItem(`syncframe-invite-${roomId}`);
   if (invite) {
-    inviteRowEl.classList.add("show");
-    let currentInvite = invite;
+    inviteRowEl.classList.add("show");    let currentInvite = invite;
     const inviteLinkEl = $("#inviteLink") as HTMLInputElement;
     const buildLink = (code: string): string =>
       `${location.origin}/lobby.html?room=${encodeURIComponent(roomId)}&key=${encodeURIComponent(code)}`;
@@ -628,6 +671,9 @@ if (role === "host") {
         }
       })();
     });
+  } else {
+    // 未生成访问码的房间：没有邀请链接，隐藏邀请入口（凭房间号即可加入）。
+    inviteToggleBtn.hidden = true;
   }
 }
 
@@ -644,6 +690,14 @@ const client = new SyncClient({
   media: adapter,
   hardDriftMs,
   onStatus: (line) => setStatus(line),
+  onClosedByServer: (code, reason) => {
+    // 房间被房主/管理员删除（服务端 4003）：清掉本地会话并回大厅，不再重连。
+    if (code === 4003) {
+      clearSession(roomId);
+      setStatus(`房间已被删除（${reason || "房间已被删除"}），即将返回大厅…`, true);
+      window.setTimeout(() => location.replace("/lobby.html"), 1500);
+    }
+  },
   onRoster: (msg) => {
     viewerBarText.dataset.hostAway = msg.hostAway ? "1" : "0";
     const membersEl = $("#members");
@@ -955,7 +1009,8 @@ async function refreshMediaList(): Promise<void> {
           void (async () => {
             try {
               const g = await fetchGrant(item.mediaId);
-              const u = new URL(g.url);
+              // OpenList/反代地址为同源相对路径，B 站为绝对地址：都按当前源解析。
+              const u = new URL(g.url, location.origin);
               setStatus(`字幕授权 OK：${item.name}（${u.origin}${u.pathname.slice(0, 24)}…，凭证 ${g.expiresInSec / 60} 分钟）`);
             } catch (err) {
               setStatus(`字幕授权失败: ${err instanceof Error ? err.message : err}`, true);

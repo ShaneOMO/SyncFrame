@@ -86,14 +86,14 @@
     #clockSub { text-align: center; color: var(--text-dim); padding-bottom: 34px; }
 
     /* ── 控制条已由 movi-player 内置控件接管，此处仅保留播放器容器样式 ── */
-    .viewer-bar { padding: 12px 4px 2px; color: var(--text-dim); font-size: var(--fs-small); display: flex; align-items: center; gap: var(--sp-2); }
+    .viewer-bar { padding: 12px 0 2px; color: var(--text-dim); font-size: var(--fs-small); display: flex; align-items: center; gap: var(--sp-2); }
     .viewer-bar .live-dot {
       width: 7px; height: 7px; border-radius: var(--radius-pill); background: var(--success);
       display: inline-block; flex: 0 0 auto;
     }
     .viewer-bar.paused .live-dot { background: var(--warning); }
     #viewerBarTime { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-caption); }
-    #status { color: var(--text-dim); font-size: var(--fs-small); min-height: 20px; padding: 8px 4px 0; }
+    #status { color: var(--text-dim); font-size: var(--fs-small); min-height: 20px; padding: 8px 0 0; }
     #status.warn { color: var(--warning); }
     #status.warn::before {
       content: ""; display: inline-block; width: 6px; height: 6px;
@@ -193,9 +193,10 @@
       border-radius: var(--radius-lg); padding: 10px var(--sp-4);
     }
     #inviteRow.show { display: flex; }
-    #inviteRow > label { color: var(--text-dim); font-size: var(--fs-caption); flex: 0 0 auto; }
+    #inviteRow > label { color: var(--text-dim); font-size: var(--fs-caption); flex: 0 0 auto; margin: 0; }
     #inviteLink { flex: 1; min-width: 220px; font-size: var(--fs-caption); }
-    #inviteRow button { padding: 5px 14px; }
+    /* 按钮与输入框同高对齐（input: 8px 内边距 + 边框），避免邀请行高低不齐 */
+    #inviteRow button { margin: 0; padding: 8px 16px; }
     @media (max-width: 560px) {
       /* 添加影片弹窗：小屏下回到顶部横排页签 */
       .add-body { flex-direction: column; gap: var(--sp-3); }
@@ -225,6 +226,8 @@
       <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></symbol>
       <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
       <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3z"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/></symbol>
     </defs>
   </svg>
 
@@ -242,6 +245,7 @@
     <span class="spacer"></span>
     <span id="members"></span>
     <button id="inviteToggle" class="ghost" title="邀请码与分享"><svg class="ic"><use href="#i-users"/></svg>邀请</button>
+    <button id="deleteRoomBtn" class="danger" hidden title="删除房间（不可恢复，所有成员将被请出）"><svg class="ic"><use href="#i-trash"/></svg>删除房间</button>
     <a href="/lobby.html"><button class="ghost" title="返回大厅">退出房间</button></a>
   </header>
 
@@ -301,7 +305,7 @@
     <div class="modal-card" role="dialog" aria-modal="true" aria-label="添加影片">
       <div class="modal-head">
         <h2>添加影片</h2>
-        <button id="addMediaClose" class="icon ghost" aria-label="关闭">✕</button>
+        <button id="addMediaClose" class="icon ghost" aria-label="关闭"><svg class="ic"><use href="#i-x"/></svg></button>
       </div>
       <div class="add-body">
         <div class="tabs" id="addMediaTabs" role="tablist" aria-label="添加方式">
