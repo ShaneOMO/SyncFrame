@@ -163,7 +163,12 @@ async function main(): Promise<void> {
     console.log("— 媒体授权 —");
     const grant = await getJson(BASE, `/api/rooms/${created.roomId}/media/${mediaId}/grant`, viewer.data.memberToken);
     check("观众 grant 视频", grant.status === 200 && typeof grant.data.url === "string");
-    const bytes = await fetch(String(grant.data.url), { headers: { Range: "bytes=0-4095" } });
+    // 跨域修复：OpenList grant 统一下发 /stream 票据反代地址（网盘后端不放行 CORS），不再下发存储直链。
+    check(
+      "OpenList grant 走 /stream 反代",
+      String(grant.data.url).startsWith(`/api/rooms/${created.roomId}/media/${mediaId}/stream?ticket=`),
+    );
+    const bytes = await fetch(`${BASE}${grant.data.url}`, { headers: { Range: "bytes=0-4095" } });
     check("视频字节可取（206）", bytes.status === 206 && (await bytes.arrayBuffer()).byteLength === 4096);
     const subGrant = await getJson(BASE, `/api/rooms/${created.roomId}/media/${subtitle.mediaId}/grant`, viewer.data.memberToken);
     check("观众 grant 字幕（同视频授权路径）", subGrant.status === 200);

@@ -358,7 +358,7 @@ test("grant：无令牌 401；未注册 mediaId 404；跨房间 mediaId 404；�
   assert.equal(grant.status, 200);
   assert.equal(typeof grant.data.url, "string");
   assert.ok(Number(grant.data.expiresInSec) > 0, "应返回短期凭证有效期提示");
-  const mediaRes = await fetch(String(grant.data.url), { headers: { Range: "bytes=0-1023" } });
+  const mediaRes = await fetch(`${BASE}${grant.data.url}`, { headers: { Range: "bytes=0-1023" } });
   assert.equal(mediaRes.status, 206);
   const buf = await mediaRes.arrayBuffer();
   assert.equal(buf.byteLength, 1024);
@@ -384,11 +384,15 @@ test("外挂字幕授权与视频一致：同 grant 路径、同存储前缀", a
   const sg = await getJson(BASE, `/api/rooms/${created.roomId}/media/${subtitle!.mediaId}/grant`, v.data.memberToken);
   assert.equal(vg.status, 200);
   assert.equal(sg.status, 200);
-  const videoUrl = new URL(String(vg.data.url));
-  const subUrl = new URL(String(sg.data.url));
-  assert.equal(videoUrl.origin, subUrl.origin, "字幕与视频应来自同一存储");
-  assert.equal(videoUrl.pathname.slice(0, 7), subUrl.pathname.slice(0, 7), "字幕与视频应同存储前缀（桩为扁平 /media/ 布局）");
-  const subRes = await fetch(String(sg.data.url), { headers: { Range: "bytes=0-99" } });
+  // 跨域修复后两者都是本站 /stream 反代地址（票据绑定存储上游），不再直接暴露存储直链。
+  const videoUrl = new URL(String(vg.data.url), BASE);
+  const subUrl = new URL(String(sg.data.url), BASE);
+  assert.equal(videoUrl.origin, subUrl.origin, "字幕与视频应来自同一授权出口");
+  assert.match(videoUrl.pathname, /^\/api\/rooms\/[^/]+\/media\/[^/]+\/stream$/, "视频应走 /stream 反代");
+  assert.match(subUrl.pathname, /^\/api\/rooms\/[^/]+\/media\/[^/]+\/stream$/, "字幕应走 /stream 反代");
+  assert.ok(videoUrl.searchParams.get("ticket"), "视频票据存在");
+  assert.ok(subUrl.searchParams.get("ticket"), "字幕票据存在");
+  const subRes = await fetch(`${BASE}${sg.data.url}`, { headers: { Range: "bytes=0-99" } });
   assert.equal(subRes.status, 206);
 });
 
