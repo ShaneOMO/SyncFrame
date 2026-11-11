@@ -10,6 +10,7 @@
   "dependencies": {
     "@syncframe/openlist-adapter": "*",
     "@syncframe/sync-protocol": "*",
+    "tsx": "^4.19.0",
     "ws": "^8.22.0"
   }
 }
