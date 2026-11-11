@@ -21,10 +21,11 @@
  *  - POST /api/admin/users         (Bearer admin)      创建账户
  *  - DELETE /api/admin/users/:name (Bearer admin)      删除账户
  *  - POST /api/admin/users/:name/password (Bearer admin) 重置密码
- *  - GET  /api/rooms                                   公开房间列表（大厅）
- *  - POST /api/rooms            (Bearer userToken) {name, roomId?, inviteCode?} → {roomId, inviteCode, memberToken, ...}
- *                                                    （游客 401：创建房间必须登录）
- *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}（公开，凭邀请码）
+ *  - GET  /api/rooms                                   公开房间列表（大厅；带 userToken 时标记可删除的房间）
+ *  - POST /api/rooms            (Bearer userToken) {name, roomId?, inviteCode?, noInvite?} → {roomId, inviteCode|null, memberToken, ...}
+ *                                                    （游客 401；noInvite=true 则不生成访问码，凭房间号即可加入）
+ *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}（公开；未设访问码的房间可省略 inviteCode）
+ *  - DELETE /api/rooms/:id      (Bearer userToken)   删除房间（仅房主本人或管理员）；房间只有被删除才会消失
  *  - GET  /api/browse?provider=&path=&page=           列目录（仅房主本人账户 + X-User-Token）
  *  - GET  /api/search?provider=&keywords=&parent=&page= 搜索（同上）
  *  - POST /api/rooms/:id/media  注册媒体（仅房主）。三种形态：
@@ -34,7 +35,8 @@
  *    自动注册同目录外挂字幕（srt/ass/ssa/vtt）
  *  - GET  /api/rooms/:id/media/:mediaId/grant        签发媒体地址（房间成员；跨房间 404）
  *      B 站：mcdn 可直连时下发 CDN 直链（浏览器直拉，服务器不耗带宽），否则下发 /stream 票据；两者均带回落地址
- *  - GET  /api/rooms/:id/media/:mediaId/stream?ticket=  Bilibili 流反代（透传 Range/HEAD；票据绑定已解析的上游地址）
+ *      OpenList：解析存储直链后统一下发 /stream 票据（网盘后端不放行 CORS，浏览器无法跨域拉流）
+ *  - GET  /api/rooms/:id/media/:mediaId/stream?ticket=  流反代（透传 Range/HEAD；票据绑定已解析的上游地址；B 站/OpenList 按票据类型带上游头）
 
  *
  *  - WS   /ws?room=<id>（子协议 sf.token.<memberToken>）  同步房间（凭成员令牌入场）
@@ -75,7 +77,7 @@ if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
 }
 
 // P3：房间注册表（鉴权 + 媒体受控映射 + 授权缓存）。审计日志不含令牌/URL/路径。
-const registry = new RoomRegistry({  dataDir: DATA_DIR, onAudit: (ev) => {
+const registry = new RoomRegistry({  dataDir: DATA_DIR, isAdmin: (username) => accounts.isAdmin(username), onAudit: (ev) => {
     const fp = ev.clientId ? ` member=${ev.clientId}` : "";
     const mid = ev.mediaId ? ` media=${ev.mediaId}` : "";
     const detail = ev.detail ? ` ${ev.detail}` : "";
@@ -464,13 +466,15 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, body:
   const clientId = typeof parsed.clientId === "string" ? parsed.clientId : undefined;
   const roomIdOpt = typeof parsed.roomId === "string" && parsed.roomId.trim() ? parsed.roomId.trim() : undefined;
   const inviteOpt = typeof parsed.inviteCode === "string" && parsed.inviteCode.trim() ? parsed.inviteCode.trim() : undefined;
+  // 创建时可选不生成访问码：此时任何人凭房间号即可加入（显式自定义邀请码优先）。
+  const noInvite = parsed.noInvite === true && inviteOpt === undefined;
   if (!name.trim()) {
     sendJson(res, 400, { error: "房间名不能为空" });
     return;
   }
   let created: ReturnType<typeof registry.createRoom>;
   try {
-    created = registry.createRoom(name, hostUser, clientId, { roomId: roomIdOpt, inviteCode: inviteOpt });
+    created = registry.createRoom(name, hostUser, clientId, { roomId: roomIdOpt, inviteCode: inviteOpt, noInvite });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     sendJson(res, message.includes("已被占用") ? 409 : 400, { error: message });
@@ -479,6 +483,7 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, body:
   const { room, member, hostSecret } = created;
   sendJson(res, 200, {
     roomId: room.roomId,
+    // 未生成访问码的房间返回 null，客户端不展示邀请链接。
     inviteCode: room.inviteCode,
     hostSecret,
     memberToken: member.token,
@@ -517,10 +522,38 @@ async function handleRotateInvite(req: IncomingMessage, res: ServerResponse, roo
   if (!member) return;
   const result = registry.rotateInvite(roomId, member);
   if (!result.ok) {
-    sendJson(res, result.reason === "no-room" ? 404 : 403, { error: "房间不存在或只有房主可以重置邀请码" });
+    if (result.reason === "no-room") sendJson(res, 404, { error: "房间不存在" });
+    else if (result.reason === "no-invite") sendJson(res, 400, { error: "该房间未启用访问码，无需重置" });
+    else sendJson(res, 403, { error: "只有房主可以重置邀请码" });
     return;
   }
   sendJson(res, 200, { inviteCode: result.inviteCode });
+}
+
+/**
+ * 删除房间（仅房主本人或管理员）：注册表房间与内存同步房间一并清除，
+ * 在线成员全部被踢（WS 4003）并回到大厅。房间不再因闲置自动消失，只能由此接口删除。
+ */
+async function handleDeleteRoom(req: IncomingMessage, res: ServerResponse, roomId: string): Promise<void> {
+  const username = accounts.authenticate(bearerToken(req));
+  if (!username) {
+    sendJson(res, 401, { error: "删除房间需要先登录" });
+    return;
+  }
+  const rec = registry.peek(roomId);
+  if (!rec) {
+    sendJson(res, 404, { error: "房间不存在" });
+    return;
+  }
+  if (rec.hostUser !== username && !accounts.isAdmin(username)) {
+    registry.audit({ roomId, action: "auth:forbidden", clientId: undefined, detail: "room-delete" });
+    sendJson(res, 403, { error: "只有房主或管理员可以删除房间" });
+    return;
+  }
+  // 先踢在线成员，再清注册表（成员令牌/邀请码/媒体映射随 rooms.json 一并删除）。
+  roomManager.destroyRoom(roomId);
+  registry.disposeRoom(roomId);
+  sendJson(res, 200, { ok: true });
 }
 
 async function handleBrowse(req: IncomingMessage, res: ServerResponse, url: URL, roomId: string | null): Promise<void> {
@@ -747,14 +780,19 @@ function issueStreamUrl(
   member: MemberRecord,
   track: "video" | "audio",
   upstreamUrl: string,
+  opts: { kind?: StreamTicket["kind"]; referer?: string; userAgent?: string; fileName?: string } = {},
 ): string {
   const ticket = randomUUID();
   streamTickets.set(ticket, {
+    kind: opts.kind ?? "bilibili",
     roomId,
     mediaId,
     memberClientId: member.clientId,
     track,
     upstreamUrl,
+    referer: opts.referer,
+    userAgent: opts.userAgent,
+    fileName: opts.fileName,
     expiresAt: Date.now() + STREAM_TICKET_TTL_MS,
   });
   return `/api/rooms/${encodeURIComponent(roomId)}/media/${encodeURIComponent(mediaId)}/stream?ticket=${encodeURIComponent(ticket)}`;
@@ -825,10 +863,19 @@ async function handleGrant(
       }
       // OpenList provider：用注册者（房间创建者）的凭据解析（凭据不出服务端）。
       if (entry.providerOwner && entry.providerId) {
-        return userOpenListClient(entry.providerOwner, entry.providerId).then((ol) => {
+        return userOpenListClient(entry.providerOwner, entry.providerId).then(async (ol) => {
           if (!ol) throw new Error("provider 不可用");
-          const resolved = resolveWithClient(ol.client, ol.baseUrl, entry.path, req.headers["user-agent"] ?? "SyncFrame-PoC/0.1");
-          return resolved;
+          const resolved = await resolveWithClient(ol.client, ol.baseUrl, entry.path, req.headers["user-agent"] ?? "SyncFrame-PoC/0.1");
+          // 跨域修复：网盘存储后端不对浏览器放行 CORS，movi-player 的 fetch/Range 拉流会被拦截。
+          // 与 B 站一致改走 /stream 票据反代（票据绑定已解析的上游地址，Range/HEAD 透传），
+          // 带 OpenList 源站 Referer（部分存储防盗链校验）与播放端 UA（部分存储按 UA 校验）。
+          const streamUrl = issueStreamUrl(roomId, mediaId, member, "video", resolved.url, {
+            kind: "openlist",
+            referer: `${ol.baseUrl}/`,
+            userAgent: req.headers["user-agent"] ?? "SyncFrame-PoC/0.1",
+            fileName: resolved.name,
+          });
+          return { ...resolved, url: streamUrl };
         });
       }
       throw new Error("媒体来源 provider 不可用");
@@ -845,6 +892,47 @@ async function handleGrant(
 }
 
 // ── Bilibili 流反代：浏览器 <video> 无法带 Referer，由服务端代拉流并透传 Range ──
+
+/** OpenList 反代的扩展名 → MIME（上游未给 Content-Type 时兜底用）。 */
+const OPENLIST_STREAM_MIME: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".mkv": "video/x-matroska",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".avi": "video/x-msvideo",
+  ".ts": "video/mp2t",
+  ".mpg": "video/mpeg",
+  ".mpeg": "video/mpeg",
+  ".flv": "video/x-flv",
+  ".wmv": "video/x-ms-wmv",
+  ".rmvb": "application/vnd.rn-realmedia-vbr",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac",
+  ".ogg": "audio/ogg",
+  ".wav": "audio/wav",
+  ".srt": "application/x-subrip",
+  ".vtt": "text/vtt",
+  ".ass": "text/x-ssa",
+  ".ssa": "text/x-ssa",
+};
+
+/**
+ * /stream 响应 Content-Type：
+ * - bilibili：固定 video/mp4（DASH 分段即 mp4，行为不变）；
+ * - openlist：优先透传上游；上游是 octet-stream 或未给时按扩展名推断，兜底 video/mp4。
+ */
+function streamContentType(t: StreamTicket, upstreamType: string | null): string {
+  if (t.kind === "openlist") {
+    if (upstreamType && upstreamType !== "application/octet-stream") return upstreamType;
+    const name = t.fileName ?? "";
+    const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
+    return OPENLIST_STREAM_MIME[ext] ?? "video/mp4";
+  }
+  return "video/mp4";
+}
 
 async function handleStream(
   req: IncomingMessage,
@@ -893,10 +981,17 @@ async function handleStream(
   }
   try {
     const range = req.headers.range;
-    const upstreamHeaders: Record<string, string> = {
-      "User-Agent": BILIBILI_UA,
-      Referer: "https://www.bilibili.com",
-    };
+    // 上游请求头按票据类型区分：B 站 CDN 需要桌面 UA + B 站 Referer；
+    // OpenList 存储后端按 OpenList 源站 Referer 防盗链，UA 与播放端保持一致。
+    const upstreamHeaders: Record<string, string> = t.kind === "openlist"
+      ? {
+          "User-Agent": t.userAgent ?? "SyncFrame-PoC/0.1",
+          ...(t.referer ? { Referer: t.referer } : {}),
+        }
+      : {
+          "User-Agent": BILIBILI_UA,
+          Referer: "https://www.bilibili.com",
+        };
     if (range) upstreamHeaders.Range = range;
     // R4：按客户端方法透传，避免 HEAD 探测被当成 GET 把整片拉下来。
     const upstream = await fetch(t.upstreamUrl, {
@@ -909,14 +1004,14 @@ async function handleStream(
       const total = probe.headers.get("content-range")?.match(/\/(\d+)\s*$/)?.[1];
       await probe.body?.cancel().catch(() => {});
       if (total) {
-        res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": total, "Accept-Ranges": "bytes" });
+        res.writeHead(200, { "Content-Type": streamContentType(t, null), "Content-Length": total, "Accept-Ranges": "bytes" });
         res.end();
         return;
       }
     }
     res.writeHead(upstream.status, {
       // R5：上游是 application/octet-stream，播放器需要明确的容器类型。
-      "Content-Type": "video/mp4",
+      "Content-Type": streamContentType(t, upstream.headers.get("content-type")),
       ...(upstream.headers.get("content-length")
         ? { "Content-Length": upstream.headers.get("content-length")! }
         : {}),
@@ -954,7 +1049,7 @@ async function handleStream(
         }
       } catch (err) {
         if (!stopped) {
-          console.warn(`[stream] bilibili 拉流中断 media=${mediaId}: ${err instanceof Error ? err.message : err}`);
+          console.warn(`[stream] ${t.kind} 拉流中断 media=${mediaId}: ${err instanceof Error ? err.message : err}`);
         }
       }
       if (!stopped) res.end();
@@ -1051,12 +1146,21 @@ function clientIp(req: IncomingMessage): string {
 const STREAM_TICKET_TTL_MS = 12 * 60 * 60 * 1000;
 
 interface StreamTicket {
+  /** bilibili：上游是 B 站 CDN（带 B 站 UA/Referer，固定 video/mp4）；
+   *  openlist：上游是网盘存储直链（带 OpenList 源站 Referer，Content-Type 按上游/扩展名推断）。 */
+  kind: "bilibili" | "openlist";
   roomId: string;
   mediaId: string;
   memberClientId: string;
   track: "video" | "audio";
   /** 已解析的上游地址（不含任何凭证）；/stream 直接代理，不再二次解析。 */
   upstreamUrl: string;
+  /** openlist：上游防盗链 Referer（OpenList 源站）。 */
+  referer?: string;
+  /** openlist：播放端 UA（部分存储按 UA 生成/校验直链）。 */
+  userAgent?: string;
+  /** openlist：文件名（用于推断 Content-Type）。 */
+  fileName?: string;
   expiresAt: number;
 }
 
@@ -1142,8 +1246,10 @@ const server = createServer(async (req, res) => {
     } else if (url.pathname === "/api/rooms" && req.method === "POST") {
       await handleCreateRoom(req, res, await readBody(req));
     } else if (url.pathname === "/api/rooms" && req.method === "GET") {
-      // P4 大厅房间列表（公开摘要：房间号/房主昵称/人数/视频数）。
-      sendJson(res, 200, { rooms: registry.listRooms() });
+      // P4 大厅房间列表（公开摘要：房间号/房主昵称/人数/视频数/是否有访问码/当前用户可否删除）。
+      // 可选 Bearer userToken：登录后标记自己创建的房间，大厅据此展示「删除」按钮。
+      const viewer = accounts.authenticate(bearerToken(req));
+      sendJson(res, 200, { rooms: registry.listRooms(viewer ?? undefined) });
     } else if (url.pathname === "/api/auth/login" && req.method === "POST") {
       // M2：登录接口限流（10 次/分钟/IP），配合用户名级失败锁定防撞库。
       if (!rateLimit("login", clientIp(req))) {
@@ -1173,6 +1279,8 @@ const server = createServer(async (req, res) => {
         return;
       }
       await handleJoinRoom(req, res, url.pathname.split("/")[3], await readBody(req));
+    } else if (url.pathname.startsWith("/api/rooms/") && req.method === "DELETE") {
+      await handleDeleteRoom(req, res, url.pathname.split("/")[3]);
     } else if (url.pathname.startsWith("/api/rooms/") && req.method === "POST" && url.pathname.endsWith("/invite/rotate")) {
       await handleRotateInvite(req, res, url.pathname.split("/")[3]);
     } else if (url.pathname === "/api/browse" && req.method === "GET") {
@@ -1242,18 +1350,9 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
-// P3：注册表房间保留期——同步房间销毁（全员离开 5s 宽限）后，注册表房间仍保留 30 分钟，
-// 保证房主/观众刷新页面、短期断网后可凭原令牌/邀请码直接恢复（P3 通过门槛）。
-const REGISTRY_RETAIN_MS = 30 * 60 * 1000;
-const registrySweep = setInterval(() => {
-  const cutoff = Date.now() - REGISTRY_RETAIN_MS;
-  for (const roomId of registry.roomIds()) {
-    if (roomManager.peek(roomId)) continue; // 同步房间还活着
-    const rec = registry.peek(roomId);
-    if (rec && rec.lastActiveAt < cutoff) registry.disposeRoom(roomId);
-  }
-}, 60_000);
-registrySweep.unref();
+// 房间生命周期：注册表房间不再因闲置自动消失——只有房主/管理员显式删除
+// （DELETE /api/rooms/:id）才会清除；全员离开后内存同步房间照常回收，下次加入自动重建。
+// 成员令牌 12h 过期、邀请码随 rooms.json 持久化，重启/刷新均可凭原凭据恢复。
 
 server.listen(PORT, () => {
   console.log(`SyncFrame 已启动: http://localhost:${PORT}${WEB_DIST ? "（含前端静态资源，单端口）" : ""}`);
@@ -1266,6 +1365,6 @@ server.listen(PORT, () => {
   console.log(`  GET  /api/browse?room=&provider= | /api/search?provider=&keywords=   （房主本人媒体库）`);
   console.log(`  POST /api/rooms/:id/media | GET .../media/:mediaId/grant   （受控映射 + 媒体地址）`);
   console.log(`  POST media {provider:"bilibili", url}  支持 BV/av/视频链接/番剧 ep、ss（凭证走 X-Bili-Sessdata，可选）`);
-  console.log(`  GET  .../media/:mediaId/stream?ticket=   （Bilibili 流反代兜底，Range/HEAD 透传，票据绑定上游地址）`);
+  console.log(`  GET  .../media/:mediaId/stream?ticket=   （流反代兜底：B 站 CDN / OpenList 存储，Range/HEAD 透传，票据绑定上游地址）`);
   console.log(`  WS   /ws?room=<id>（子协议 sf.token.*）   （凭成员令牌入场）`);
 });

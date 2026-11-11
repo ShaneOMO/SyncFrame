@@ -134,6 +134,14 @@ export class RoomManager {
     this.rooms.delete(roomId);
     this.onRoomDisposed(roomId);
   }
+
+  /** 房间被房主/管理员删除：踢出全部成员并销毁内存房间（注册表房间由调用方一并清除）。 */
+  destroyRoom(roomId: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    room.forceDestroy();
+    this.disposeRoom(roomId);
+  }
 }
 
 export class Room {
@@ -147,6 +155,8 @@ export class Room {
   private state: RoomState | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private emptySince: number | null = null;
+  /** 房间被删除后：drop/sweep 等迟到事件不再触发广播与回收逻辑。 */
+  private destroyed = false;
 
   constructor(id: string, mgr: RoomManager) {
     this.id = id;
@@ -351,6 +361,7 @@ export class Room {
   }
 
   private drop(memberId: string, ws?: WebSocket): void {
+    if (this.destroyed) return;
     const member = this.members.get(memberId);
     if (!member) return;
     // M4：迟到事件防护——该成员已被同一 clientId 的新连接替换时忽略。
@@ -404,7 +415,25 @@ export class Room {
     this.timer = setInterval(() => this.sweep(), SWEEP_EVERY_MS);
   }
 
+  /** 强制销毁（房间被删除）：踢出全部成员、停掉清扫定时器、丢弃权威状态。 */
+  forceDestroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    for (const m of this.members.values()) {
+      try {
+        m.ws.close(4003, "房间已被删除");
+      } catch {
+        /* already gone */
+      }
+    }
+    this.members.clear();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.state = null;
+  }
+
   private sweep(): void {
+    if (this.destroyed) return;
     const now = this.mgr.stamp();
     // 死连接清理（浏览器崩溃、断网无 close 帧）。
     for (const [id, m] of [...this.members]) {

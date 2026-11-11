@@ -71,7 +71,8 @@ export interface MemberRecord {
 
 export interface RoomRecord {
   roomId: string;
-  inviteCode: string;
+  /** 访问码（邀请码）：null 表示创建时选择不生成，任何人凭房间号即可加入。 */
+  inviteCode: string | null;
   /** 房主重连密钥：只在创建响应中出现一次，可重建房主会话（替代可被观众看到的 clientId）。 */
   hostSecret: string;
   createdAt: number;
@@ -130,6 +131,8 @@ export interface AuditEvent {
 export interface RoomRegistryOptions {
   now?: () => number;
   onAudit?: (ev: AuditEvent) => void;
+  /** 管理员判定（用于房间列表的删除权限标记）。 */
+  isAdmin?: (username: string) => boolean;
   /** 持久化目录：房间（含成员令牌/邀请码/媒体映射）落盘 <dataDir>/rooms.json，重启恢复。 */
   dataDir?: string | null;
 }
@@ -155,11 +158,13 @@ export class RoomRegistry {
   private readonly rooms = new Map<string, RoomRecord>();
   private readonly now: () => number;
   private readonly onAudit: (ev: AuditEvent) => void;
+  private readonly isAdmin?: (username: string) => boolean;
   private readonly file: string | null;
 
   constructor(opts: RoomRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.onAudit = opts.onAudit ?? (() => {});
+    this.isAdmin = opts.isAdmin;
     this.file = opts.dataDir ? path.join(opts.dataDir, "rooms.json") : null;
     if (!this.file) return;
     try {
@@ -172,6 +177,8 @@ export class RoomRegistry {
       for (const r of raw.rooms ?? []) {
         this.rooms.set(r.roomId, {
           ...r,
+          // 兼容旧版数据：inviteCode 缺省视为已生成（旧版必然有值）。
+          inviteCode: r.inviteCode ?? null,
           media: new Map(r.media ?? []),
           members: new Map(r.members ?? []),
         });
@@ -235,7 +242,7 @@ export class RoomRegistry {
    * opts.roomId / opts.inviteCode：可选自定义字符串（校验形态与唯一性，roomId 存小写、邀请码存大写）。
    * 名字为空、roomId 已被占用、邀请码形态非法时抛出 Error（调用方转 400/409）。
    */
-  createRoom(hostName: string, hostUser: string, hostClientId?: string, opts: { roomId?: string; inviteCode?: string } = {}): {
+  createRoom(hostName: string, hostUser: string, hostClientId?: string, opts: { roomId?: string; inviteCode?: string; noInvite?: boolean } = {}): {
     room: RoomRecord;
     member: MemberRecord;
     hostSecret: string;
@@ -251,12 +258,14 @@ export class RoomRegistry {
       roomId = randomBytes(4).toString("base64url").replace(/[-_]/g, "a").slice(0, 6).toLowerCase();
       while (this.rooms.has(roomId)) roomId = makeMediaId().slice(2, 10).toLowerCase();
     }
-    let inviteCode: string;
+    let inviteCode: string | null;
     if (opts.inviteCode !== undefined) {
       inviteCode = opts.inviteCode.toUpperCase();
       if (!RoomRegistry.INVITE_CODE_RE.test(inviteCode)) {
         throw new Error("邀请码需为 4-16 位字母/数字（可含连字符）");
       }
+    } else if (opts.noInvite) {
+      inviteCode = null; // 创建时选择不生成访问码：任何人凭房间号即可加入
     } else {
       inviteCode = makeInviteCode();
     }
@@ -308,7 +317,8 @@ export class RoomRegistry {
     const room = this.rooms.get(roomId.toLowerCase());
     if (!room) return null;
     const isHost = opts.hostSecret !== undefined && opts.hostSecret === room.hostSecret;
-    if (!isHost) {
+    // 未设置访问码的房间：任何人凭房间号即可加入。
+    if (!isHost && room.inviteCode !== null) {
       if (!opts.inviteCode || opts.inviteCode.toUpperCase() !== room.inviteCode) return null;
     }
     const member = this.addMember(room, name, isHost ? "host" : "viewer", isHost ? room.hostClientId : undefined);
@@ -325,9 +335,10 @@ export class RoomRegistry {
   rotateInvite(
     roomId: string,
     member: MemberRecord,
-  ): { ok: true; inviteCode: string } | { ok: false; reason: "not-host" | "no-room" } {
+  ): { ok: true; inviteCode: string } | { ok: false; reason: "not-host" | "no-room" | "no-invite" } {
     const room = this.rooms.get(roomId);
     if (!room) return { ok: false, reason: "no-room" };
+    if (room.inviteCode === null) return { ok: false, reason: "no-invite" };
     if (member.role !== "host" || member.clientId !== room.hostClientId) {
       return { ok: false, reason: "not-host" };
     }
@@ -488,14 +499,18 @@ export class RoomRegistry {
     }));
   }
 
-  /** 公开房间列表（大厅展示）：房间号、房主昵称、创建时间、在线人数、视频数。 */
-  listRooms(): { roomId: string; hostName: string; createdAt: number; memberCount: number; mediaCount: number }[] {
+  /** 公开房间列表（大厅展示）：房间号、房主昵称、创建时间、在线人数、视频数；
+   *  hasInvite=false 表示该房间未设置访问码（凭房间号即可加入）；
+   *  传入查看者用户名时标记 deletable（房主本人或管理员可删除房间）。 */
+  listRooms(viewer?: string): { roomId: string; hostName: string; createdAt: number; memberCount: number; mediaCount: number; hasInvite: boolean; deletable: boolean }[] {
     return [...this.rooms.values()].map((r) => ({
       roomId: r.roomId,
       hostName: r.hostName,
       createdAt: r.createdAt,
       memberCount: r.members.size,
       mediaCount: r.media.size,
+      hasInvite: r.inviteCode !== null,
+      deletable: viewer !== undefined && (viewer === r.hostUser || this.isAdmin?.(viewer) === true),
     }));
   }
 
