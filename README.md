@@ -36,7 +36,10 @@ SyncFrame/
 │   ├── packages/openlist-adapter/ # OpenList API 适配器
 │   └── tests/                # 自动化测试（协议仿真 / 安全 / e2e / UI 冒烟 / provider 单测 / 移动端检查）
 ├── deploy/server.Dockerfile  # 单容器镜像（前端构建 + 后端运行，单端口）
-└── docker-compose.yml        # 一键部署（单个服务，端口映射给自行反向代理）
+├── docker-compose.yml        # 一键部署（单个服务，端口映射给自行反向代理）
+├── scripts/                  # 本地开发辅助脚本
+│   └── dev.bat               # Windows 一键拉起后端 + 前端开发服务器（等价于方式一的两个终端）
+└── .github/workflows/        # CI/CD（push 到 main 自动 SSH 到服务器 git pull + 重建容器）
 ```
 
 ## 快速开始
@@ -72,6 +75,8 @@ npm run p1:web
 ```
 
 打开 http://localhost:5173/ → 登录 → 创建房间 → 把邀请链接发给观众即可同步观影。
+
+Windows 下也可以直接双击 `scripts/dev.bat`，会自动开两个窗口分别跑后端和前端。
 
 **开发：**
 
@@ -141,3 +146,9 @@ docker compose up --build -d    # 改了代码后重新构建并启动
 - `./data` 卷持久化账户/房间（含 OpenList 凭据）：重启容器不丢数据，**注意备份与权限**（不要挂到公共目录）；删除卷内容即重置
 - 容器以 `node`（uid 1000）运行：首次部署前需 `mkdir -p data && sudo chown -R 1000:1000 data`，否则账户/房间无法落盘
 - 容器带 `restart: unless-stopped`，宿主机重启后自动拉起
+
+**自动部署（GitHub Actions）：**
+
+`.github/workflows/deploy.yml` 在 push 到 `main` 时通过 SSH 登录服务器执行 `git pull && docker compose up -d --build`。
+需要在仓库 Settings → Secrets and variables → Actions 配置 `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY`
+（专用部署密钥，公钥追加到服务器 `~/.ssh/authorized_keys`；脚本内服务器路径为 `/opt/stacks/SyncFrame`）。
