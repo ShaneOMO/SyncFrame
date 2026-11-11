@@ -47,6 +47,9 @@ test("账户持久化：管理员/用户/provider 凭据重启后保留，令牌
     assert.ok(!("password" in providers[0]) && !("cookie" in providers[1]), "对外仍不回显凭据");
     // 内部凭据保留（grant 解析要用）
     assert.equal(b.getUser("alice")?.providers.size, 2);
+    // Windows：关闭连接释放文件句柄后才能删除临时目录
+    a.close();
+    b.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -80,6 +83,8 @@ test("房间持久化：房间/成员令牌/邀请码/媒体映射重启后恢�
     assert.equal(media?.length, 1);
     assert.equal(media?.[0].name, "视频");
     assert.ok(r2.isRoomOwner(room.roomId, "alice"));
+    r.close();
+    r2.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -90,4 +95,6 @@ test("dataDir 为 null（未配置）时纯内存，不写文件", () => {
   assert.equal(a.initAdmin("admin", "adminpw123"), true);
   const r = new RoomRegistry({});
   assert.equal(r.roomCount(), 0);
+  a.close();
+  r.close();
 });

@@ -10,14 +10,13 @@
  *   **Bilibili SESSDATA 不入服务端**：由浏览器 localStorage 持有，请求时经
  *   X-Bili-Sessdata 头传入，服务端即用即弃（见 index.ts）。
  *
- * 持久化：传入 dataDir 后，账户（含 OpenList 凭据）落盘为 <dataDir>/users.json
- * （原子写入：tmp + rename，权限 0600）；重启后账户保留，用户令牌仍内存态（重启需重新登录）。
- * 注意：该文件含 OpenList 凭据，务必保持私有。
+ * 持久化：传入 dataDir 后，账户（含 OpenList 凭据）经 store.ts 落盘为 <dataDir>/syncframe.db
+ * （SQLite，单条写入原子）；重启后账户保留，用户令牌仍内存态（重启需重新登录）。
+ * 首次启动自动从旧的 users.json 迁移。注意：库文件含 OpenList 凭据，务必保持私有。
  */
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { Store } from "./store.ts";
 
 export type UserRole = "admin" | "user";
 
@@ -77,49 +76,47 @@ function validateCredentials(username: string, password: string): string | null 
 export class UserAccounts {
   private readonly users = new Map<string, UserRecord>();
   private readonly tokens = new Map<string, { username: string; expiresAt: number }>();
-  /** 持久化文件路径；null = 纯内存（测试/未配置 dataDir）。 */
-  private readonly file: string | null;
+  /** 持久化存储；null = 纯内存（测试/未配置 dataDir）。 */
+  private readonly store: Store | null;
 
   constructor(dataDir: string | null = null) {
-    this.file = dataDir ? path.join(dataDir, "users.json") : null;
-    if (!this.file) return;
-    try {
-      const raw = JSON.parse(readFileSync(this.file, "utf-8")) as {
-        users?: (Omit<UserRecord, "providers"> & { providers?: ProviderConfig[] })[];
-      };
-      for (const u of raw.users ?? []) {
-        this.users.set(u.username, {
-          ...u,
-          providers: new Map(
-            (u.providers ?? []).map((p) => {
-              // 旧版本曾把 SESSDATA 落盘：加载时立即丢弃，确保服务端不再持有 B 站凭据。
-              if (p.kind === "bilibili" && "cookie" in p) {
-                const { cookie: _legacy, ...rest } = p as BilibiliProviderConfig & { cookie?: string };
-                return [p.id, rest as BilibiliProviderConfig] as const;
-              }
-              return [p.id, p] as const;
-            }),
-          ),
-        });
-      }
-    } catch {
-      // 文件不存在或损坏：从空账户开始（损坏时备份由部署者处理）。
+    if (!dataDir) {
+      this.store = null;
+      return;
+    }
+    this.store = new Store(dataDir);
+    for (const u of this.store.loadUsers()) {
+      this.users.set(u.username, {
+        username: u.username,
+        salt: u.salt,
+        hash: u.hash,
+        role: u.role as UserRecord["role"],
+        providers: new Map(
+          ((u.providers ?? []) as ProviderConfig[]).map((p) => {
+            // 旧版本曾把 SESSDATA 落盘：加载时立即丢弃，确保服务端不再持有 B 站凭据。
+            if (p.kind === "bilibili" && "cookie" in p) {
+              const { cookie: _legacy, ...rest } = p as BilibiliProviderConfig & { cookie?: string };
+              return [p.id, rest as BilibiliProviderConfig] as const;
+            }
+            return [p.id, p] as const;
+          }),
+        ),
+      });
     }
   }
 
-  /** 原子落盘（tmp + rename，权限 0600）；未配置 dataDir 时为无操作。 */
+  /** 全量同步落盘；未配置 dataDir 时为无操作。 */
   private save(): void {
-    if (!this.file) return;
+    if (!this.store) return;
     try {
-      mkdirSync(path.dirname(this.file), { recursive: true });
-      const tmp = `${this.file}.tmp`;
-      writeFileSync(
-        tmp,
-        JSON.stringify({ version: 1, users: [...this.users.values()].map((u) => ({ ...u, providers: [...u.providers.values()] })) }),
-        { mode: 0o600 },
-      );
-      renameSync(tmp, this.file);
-      chmodSync(this.file, 0o600);
+      for (const u of this.users.values()) {
+        this.store.upsertUser({ ...u, providers: [...u.providers.values()] });
+      }
+      // 删除操作后同步移除已不存在的账户。
+      const names = new Set(this.users.keys());
+      for (const s of this.store.loadUsers()) {
+        if (!names.has(s.username)) this.store.deleteUser(s.username);
+      }
     } catch (err) {
       console.warn(`[store] 账户落盘失败: ${err instanceof Error ? err.message : err}`);
     }
@@ -184,6 +181,11 @@ export class UserAccounts {
 
   isAdmin(username: string): boolean {
     return this.users.get(username)?.role === "admin";
+  }
+
+  /** 关闭底层存储连接（测试清理临时目录前调用；常驻进程无需调用）。 */
+  close(): void {
+    this.store?.close();
   }
 
   /** 管理员创建普通账户。 */

@@ -25,10 +25,13 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     volumes:
-      # 账户（含 OpenList 凭据）与房间持久化；含敏感凭据，勿挂载到公共目录。
-      # 容器以 node（uid 1000）运行：首次部署前需 `mkdir -p data && sudo chown -R 1000:1000 data`，
+      # 账户（含 OpenList 凭据）与房间持久化为单个 SQLite 文件（syncframe-poc/data/syncframe.db）；
+      # 含敏感凭据，勿挂载到公共目录。
+      # 注意：挂载路径是仓库根目录下的 ./syncframe-poc/data（compose 文件所在目录为根目录），
+      # 写错路径会挂到一个空目录，重建容器后数据看似「丢失」。
+      # 容器以 node（uid 1000）运行：首次部署前需 `mkdir -p syncframe-poc/data && sudo chown -R 1000:1000 syncframe-poc/data`，
       # 否则会因无写权限导致账户/房间无法落盘。
-      - ./data:/app/data
+      - ./syncframe-poc/data:/app/data
     ports:
       - "7300:8787"
     restart: unless-stopped

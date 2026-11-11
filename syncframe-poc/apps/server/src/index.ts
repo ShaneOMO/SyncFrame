@@ -551,7 +551,7 @@ async function handleDeleteRoom(req: IncomingMessage, res: ServerResponse, roomI
     sendJson(res, 403, { error: "只有房主或管理员可以删除房间" });
     return;
   }
-  // 先踢在线成员，再清注册表（成员令牌/邀请码/媒体映射随 rooms.json 一并删除）。
+  // 先踢在线成员，再清注册表（成员令牌/邀请码/媒体映射随 syncframe.db 一并删除）。
   roomManager.destroyRoom(roomId);
   registry.disposeRoom(roomId);
   sendJson(res, 200, { ok: true });
@@ -1366,7 +1366,7 @@ server.on("upgrade", (req, socket, head) => {
 
 // 房间生命周期：注册表房间不再因闲置自动消失——只有房主/管理员显式删除
 // （DELETE /api/rooms/:id）才会清除；全员离开后内存同步房间照常回收，下次加入自动重建。
-// 成员令牌 12h 过期、邀请码随 rooms.json 持久化，重启/刷新均可凭原凭据恢复。
+// 成员令牌 12h 过期、邀请码随 syncframe.db 持久化，重启/刷新均可凭原凭据恢复。
 
 server.listen(PORT, () => {
   console.log(`SyncFrame 已启动: http://localhost:${PORT}${WEB_DIST ? "（含前端静态资源，单端口）" : ""}`);

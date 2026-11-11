@@ -18,9 +18,8 @@
  * - viewer 令牌注册媒体 → 403；未知/过期令牌 → 401；URL 中的 sign 参数不回显给非授权路径。
  */
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
+import { Store } from "./store.ts";
 
 /** 成员令牌有效期：12h（刷新页面/短期断网重连在窗口内免登录）。 */
 export const MEMBER_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
@@ -133,7 +132,8 @@ export interface RoomRegistryOptions {
   onAudit?: (ev: AuditEvent) => void;
   /** 管理员判定（用于房间列表的删除权限标记）。 */
   isAdmin?: (username: string) => boolean;
-  /** 持久化目录：房间（含成员令牌/邀请码/媒体映射）落盘 <dataDir>/rooms.json，重启恢复。 */
+  /** 持久化目录：房间（含成员令牌/邀请码/媒体映射）经 store.ts 落盘 <dataDir>/syncframe.db，
+   *  重启恢复（首次启动自动从旧的 rooms.json 迁移）。 */
   dataDir?: string | null;
 }
 
@@ -159,62 +159,69 @@ export class RoomRegistry {
   private readonly now: () => number;
   private readonly onAudit: (ev: AuditEvent) => void;
   private readonly isAdmin?: (username: string) => boolean;
-  private readonly file: string | null;
+  private readonly store: Store | null;
 
   constructor(opts: RoomRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.onAudit = opts.onAudit ?? (() => {});
     this.isAdmin = opts.isAdmin;
-    this.file = opts.dataDir ? path.join(opts.dataDir, "rooms.json") : null;
-    if (!this.file) return;
-    try {
-      const raw = JSON.parse(readFileSync(this.file, "utf-8")) as {
-        rooms?: (Omit<RoomRecord, "media" | "members"> & {
-          media?: [string, MediaEntry][];
-          members?: [string, MemberRecord][];
-        })[];
-      };
-      for (const r of raw.rooms ?? []) {
-        this.rooms.set(r.roomId, {
-          ...r,
-          // 兼容旧版数据：inviteCode 缺省视为已生成（旧版必然有值）。
-          inviteCode: r.inviteCode ?? null,
-          media: new Map(r.media ?? []),
-          members: new Map(r.members ?? []),
-        });
-      }
-    } catch {
-      // 文件不存在或损坏：从空注册表开始。
+    if (!opts.dataDir) {
+      this.store = null;
+      return;
+    }
+    this.store = new Store(opts.dataDir);
+    for (const r of this.store.loadRooms()) {
+      this.rooms.set(r.roomId, {
+        roomId: r.roomId,
+        // 兼容旧版数据：inviteCode 缺省视为已生成（旧版必然有值）。
+        inviteCode: r.inviteCode ?? null,
+        hostSecret: r.hostSecret,
+        createdAt: r.createdAt,
+        lastActiveAt: r.lastActiveAt,
+        hostClientId: r.hostClientId,
+        hostName: r.hostName,
+        hostUser: r.hostUser,
+        media: new Map((r.media ?? []) as [string, MediaEntry][]),
+        members: new Map((r.members ?? []) as [string, MemberRecord][]),
+      });
     }
   }
 
   /**
-   * 原子落盘（tmp + rename，权限 0600）；未配置 dataDir 时为无操作。
+   * 全量同步落盘；未配置 dataDir 时为无操作。
    * 注意：为支持重启后房主/成员用原令牌恢复，成员令牌会随房间一起持久化
    * （不含任何 B 站凭据）；该文件因此同样需要保持私有。
    */
   private save(): void {
-    if (!this.file) return;
+    if (!this.store) return;
     try {
-      mkdirSync(path.dirname(this.file), { recursive: true });
-      const tmp = `${this.file}.tmp`;
-      writeFileSync(
-        tmp,
-        JSON.stringify({
-          version: 1,
-          rooms: [...this.rooms.values()].map((r) => ({
-            ...r,
-            media: [...r.media.entries()],
-            members: [...r.members.entries()],
-          })),
-        }),
-        { mode: 0o600 },
-      );
-      renameSync(tmp, this.file);
-      chmodSync(this.file, 0o600);
+      for (const r of this.rooms.values()) {
+        this.store.putRoom({
+          roomId: r.roomId,
+          inviteCode: r.inviteCode,
+          hostSecret: r.hostSecret,
+          createdAt: r.createdAt,
+          lastActiveAt: r.lastActiveAt,
+          hostClientId: r.hostClientId,
+          hostName: r.hostName,
+          hostUser: r.hostUser,
+          media: [...r.media.entries()],
+          members: [...r.members.entries()],
+        });
+      }
+      // 删除/回收后同步移除已不存在的房间。
+      const ids = new Set(this.rooms.keys());
+      for (const s of this.store.loadRooms()) {
+        if (!ids.has(s.roomId)) this.store.deleteRoom(s.roomId);
+      }
     } catch (err) {
       console.warn(`[store] 房间落盘失败: ${err instanceof Error ? err.message : err}`);
     }
+  }
+
+  /** 关闭底层存储连接（测试清理临时目录前调用；常驻进程无需调用）。 */
+  close(): void {
+    this.store?.close();
   }
 
   audit(ev: AuditEvent): void {
