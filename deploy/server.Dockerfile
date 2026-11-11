@@ -2,10 +2,10 @@
 # 构建上下文 = 仓库根目录（见 docker-compose.yml），路径需带 syncframe-poc/ 前缀
 # 运行时后端同时托管 API / WebSocket / 静态资源；反向代理由部署者自行设置。
 #
-# 多阶段构建，镜像只包含运行必需内容：
-#   - 前端：仅 Vite 构建产物 dist（不含 vite/movi-player 源码依赖链以外的 devDeps）
-#   - 后端：仅 @syncframe/server 及其 workspace 依赖的 prod node_modules
-#     （tsx 已声明为 server 的 dependency，可直接以生产依赖安装）
+# 三阶段构建，镜像只包含运行必需内容：
+#   - 前端：仅 Vite 构建产物 dist
+#   - 后端：仅 @syncframe/server 及其 workspace 依赖的 prod node_modules（tsx 为生产依赖）
+#   - 运行时基础：alpine + apk nodejs，不含 npm/yarn/corepack（node:22-alpine 约 140MB+ 的主要来源）
 
 # ---------- 阶段 1：构建前端产物 ----------
 FROM node:22-alpine AS build
@@ -18,21 +18,32 @@ COPY syncframe-poc/apps/web ./apps/web
 
 RUN npm ci --no-audit --no-fund && npm run build -w @syncframe/web
 
-# ---------- 阶段 2：运行时 ----------
-FROM node:22-alpine
+# ---------- 阶段 2：安装 server 生产依赖（含 tsx 运行时） ----------
+FROM node:22-alpine AS deps
 WORKDIR /app
 
-# 后端运行所需的清单与源码（server 以 tsx 直接跑 TS 源码）
 COPY syncframe-poc/package.json syncframe-poc/package-lock.json ./
 COPY syncframe-poc/packages ./packages
 COPY syncframe-poc/apps/server ./apps/server
 
-# 只安装 server workspace 的生产依赖（含 workspace 内的 openlist-adapter / sync-protocol，
-# 不含 vite / typescript / playwright 等 devDependencies，也不装 web 的依赖）
+# 只装 server workspace 的生产依赖（含 openlist-adapter / sync-protocol），
+# 不含 vite / typescript / playwright 等 devDependencies，也不装 web 的依赖
 RUN npm ci --no-audit --no-fund --omit=dev -w @syncframe/server \
     && npm cache clean --force
 
-# 前端静态产物来自构建阶段，源码不进运行时镜像
+# ---------- 阶段 3：运行时（无 npm，仅 nodejs） ----------
+FROM alpine:3.21
+
+# apk 的 nodejs 包即 Node 22 LTS；不装 npm/yarn/corepack
+RUN apk add --no-cache nodejs \
+    && adduser -D -u 1000 node
+
+WORKDIR /app
+
+# node_modules 内的 @syncframe/* 为指向 ../packages/* 的相对软链，需一并拷贝 packages 源码
+COPY --from=deps /app/node_modules ./node_modules
+COPY syncframe-poc/packages ./packages
+COPY syncframe-poc/apps/server ./apps/server
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 
 ENV SERVER_PORT=8787
@@ -44,4 +55,4 @@ EXPOSE 8787
 RUN mkdir -p /app/data && chown -R node:node /app/data
 USER node
 
-CMD ["npx", "tsx", "apps/server/src/index.ts"]
+CMD ["/app/node_modules/.bin/tsx", "apps/server/src/index.ts"]
