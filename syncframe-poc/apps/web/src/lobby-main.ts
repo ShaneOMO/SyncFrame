@@ -43,6 +43,14 @@ const joinModal = $("#joinModal") as HTMLElement;
 bindModal(createModal, $("#createClose"));
 bindModal(joinModal, $("#joinClose"));
 
+// 「生成访问码」开关：默认勾选（生成 8 位访问码）；取消勾选则创建无需访问码的房间，
+// 任何人凭房间号即可加入，创建后直接进入房间。
+const createNoInviteChk = $("#createNoInvite") as HTMLInputElement;
+createNoInviteChk.addEventListener("change", () => {
+  ($("#createInviteWrap") as HTMLElement).hidden = !createNoInviteChk.checked;
+  ($("#createInvite") as HTMLInputElement).disabled = !createNoInviteChk.checked;
+});
+
 function openCreateModal(): void {
   $("#createMsg").textContent = "";
   createModal.hidden = false;
@@ -121,14 +129,20 @@ $("#createBtn").addEventListener("click", async () => {
   }
   const roomId = ($("#createRoomId") as HTMLInputElement).value.trim();
   const inviteCode = ($("#createInvite") as HTMLInputElement).value.trim();
+  const noInvite = !createNoInviteChk.checked;
   const btn = $("#createBtn") as HTMLButtonElement;
   btn.disabled = true;
   try {
     // 创建房间必须登录：携带用户令牌（服务端游客 401）。
-    const data = await postJson("/api/rooms", { name, roomId, inviteCode }, user.token);
+    const data = await postJson("/api/rooms", { name, roomId, inviteCode, noInvite }, user.token);
     const newRoomId = String(data.roomId);
     // 邀请码/hostSecret 只在创建响应里出现一次：存进 sessionStorage 供房间页展示与房主重建会话。
-    sessionStorage.setItem(`syncframe-invite-${newRoomId}`, String(data.inviteCode));
+    // 选择不生成访问码时 inviteCode 为 null：无存档、不展示邀请链接。
+    if (typeof data.inviteCode === "string" && data.inviteCode) {
+      sessionStorage.setItem(`syncframe-invite-${newRoomId}`, data.inviteCode);
+    } else {
+      sessionStorage.removeItem(`syncframe-invite-${newRoomId}`);
+    }
     sessionStorage.setItem(`syncframe-hostsecret-${newRoomId}`, String(data.hostSecret));
     enterRoom(newRoomId, data, name);
   } catch (err) {
@@ -142,12 +156,15 @@ $("#joinBtn").addEventListener("click", async () => {
   const joinMsg = $("#joinMsg");
   joinMsg.textContent = "";
   const roomId = ($("#joinRoom") as HTMLInputElement).value.trim();
-  const code = ($("#joinCode") as HTMLInputElement).value.trim().toUpperCase();
+  const codeRaw = ($("#joinCode") as HTMLInputElement).value.trim();
+  const code = codeRaw ? codeRaw.toUpperCase() : undefined;
   const name = ($("#joinName") as HTMLInputElement).value.trim() || "Guest";
-  if (!roomId || !code) {
-    joinMsg.textContent = "请填写房间号和邀请码";
+  if (!roomId) {
+    joinMsg.textContent = "请填写房间号";
+    ($("#joinRoom") as HTMLInputElement).focus();
     return;
   }
+  // 访问码可留空：设置了访问码的房间由服务端校验，未设置的房间凭房间号即可加入。
   const btn = $("#joinBtn") as HTMLButtonElement;
   btn.disabled = true;
   try {
@@ -155,7 +172,7 @@ $("#joinBtn").addEventListener("click", async () => {
     const hostSecret = sessionStorage.getItem(`syncframe-hostsecret-${roomId}`) ?? undefined;
     const data = await postJson(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
       name,
-      inviteCode: code,
+      ...(code ? { inviteCode: code } : {}),
       ...(hostSecret ? { hostSecret } : {}),
     });
     enterRoom(roomId, data, name);
@@ -178,66 +195,6 @@ if (params.get("room") && linkKey) {
 
 // ── 房间列表 ──────────────────────────────────────────────
 
-interface RoomSummary {
-  roomId: string;
-  hostName: string;
-  createdAt: number;
-  memberCount: number;
-  mediaCount: number;
-}
-
-async function refreshRoomList(): Promise<void> {
-  const listEl = $("#roomList");
-  try {
-    const res = await fetch("/api/rooms");
-    const body = (await res.json().catch(() => ({}))) as { rooms?: RoomSummary[] };
-    const rooms = body.rooms ?? [];
-    $("#roomCount").textContent = rooms.length > 0 ? `共 ${rooms.length} 个` : "";
-    listEl.textContent = "";
-    if (rooms.length === 0) {
-      const d = document.createElement("div");
-      d.className = "browse-empty";
-      d.textContent = "（当前没有活跃房间，创建一个吧）";
-      listEl.appendChild(d);
-      return;
-    }
-    for (const r of rooms) {
-      const row = document.createElement("div");
-      row.className = "room-row";
-      const idEl = document.createElement("span");
-      idEl.className = "room-id";
-      idEl.textContent = r.roomId;
-      const host = document.createElement("span");
-      host.className = "room-host";
-      host.textContent = r.hostName;
-      const meta = document.createElement("span");
-      meta.className = "room-meta";
-      meta.innerHTML = `<span></span><span class="dot">·</span><span></span>`;
-      meta.querySelectorAll("span")[0].textContent = `${r.memberCount} 人在线`;
-      meta.querySelectorAll("span")[2].textContent = `${r.mediaCount} 个视频`;
-      // 右侧「直接加入」：弹出加入弹窗并预填房间号，只需输入邀请码。
-      const joinBtn = document.createElement("button");
-      joinBtn.className = "primary room-join";
-      joinBtn.textContent = "直接加入";
-      joinBtn.addEventListener("click", () => openJoinModal(r.roomId));
-      row.append(idEl, host, meta, joinBtn);
-      listEl.appendChild(row);
-    }
-  } catch {
-    listEl.textContent = "";
-    const d = document.createElement("div");
-    d.className = "browse-empty";
-    d.textContent = "（房间列表加载失败）";
-    listEl.appendChild(d);
-  }
-}
-
-$("#refreshRooms").addEventListener("click", () => void refreshRoomList());
-void refreshRoomList();
-window.setInterval(refreshRoomList, 15_000);
-
-// ── 登录 ──────────────────────────────────────────────────
-
 const USER_KEY = "syncframe-user"; // localStorage：{ token, username }（浏览器长期持有）
 
 interface UserState {
@@ -257,6 +214,100 @@ function loadUser(): UserState | null {
 }
 
 let user = loadUser();
+
+interface RoomSummary {
+  roomId: string;
+  hostName: string;
+  createdAt: number;
+  memberCount: number;
+  mediaCount: number;
+  /** false = 创建时选择不生成访问码：凭房间号即可加入。 */
+  hasInvite: boolean;
+  /** 当前登录用户是否可删除该房间（房主本人或管理员）。 */
+  deletable: boolean;
+}
+
+async function refreshRoomList(): Promise<void> {
+  const listEl = $("#roomList");
+  try {
+    const res = await fetch("/api/rooms", { headers: userHeaders() });
+    const body = (await res.json().catch(() => ({}))) as { rooms?: RoomSummary[] };
+    const rooms = body.rooms ?? [];
+    $("#roomCount").textContent = rooms.length > 0 ? `共 ${rooms.length} 个` : "";
+    listEl.textContent = "";
+    if (rooms.length === 0) {
+      const d = document.createElement("div");
+      d.className = "browse-empty";
+      d.textContent = "（当前没有房间，创建一个吧；房间只有被删除后才会消失）";
+      listEl.appendChild(d);
+      return;
+    }
+    for (const r of rooms) {
+      const row = document.createElement("div");
+      row.className = "room-row";
+      const idEl = document.createElement("span");
+      idEl.className = "room-id";
+      idEl.textContent = r.roomId;
+      const host = document.createElement("span");
+      host.className = "room-host";
+      host.textContent = r.hostName;
+      const meta = document.createElement("span");
+      meta.className = "room-meta";
+      meta.innerHTML = `<span></span><span class="dot">·</span><span></span><span class="dot">·</span><span></span>`;
+      const metaSpans = meta.querySelectorAll("span");
+      metaSpans[0].textContent = `${r.memberCount} 人在线`;
+      metaSpans[2].textContent = `${r.mediaCount} 个视频`;
+      metaSpans[4].textContent = r.hasInvite ? "凭访问码加入" : "无需访问码";
+      // 右侧「直接加入」：弹出加入弹窗并预填房间号，只需输入邀请码。
+      const joinBtn = document.createElement("button");
+      joinBtn.className = "primary room-join";
+      joinBtn.textContent = "直接加入";
+      joinBtn.addEventListener("click", () => openJoinModal(r.roomId));
+      row.append(idEl, host, meta, joinBtn);
+      // 「删除」：仅房主本人或管理员可见；删除后房间立即消失，在线成员被踢回大厅。
+      if (r.deletable) {
+        const delBtn = document.createElement("button");
+        delBtn.className = "danger room-del";
+        delBtn.title = "删除房间（不可恢复，在线成员将被请出）";
+        delBtn.innerHTML = `<svg class="ic"><use href="#i-trash"/></svg>删除`;
+        delBtn.addEventListener("click", () => {
+          if (!window.confirm(`确认删除房间「${r.roomId}」？\n删除后不可恢复，房间内的成员将被请出。`)) return;
+          void (async () => {
+            try {
+              const res = await fetch(`/api/rooms/${encodeURIComponent(r.roomId)}`, {
+                method: "DELETE",
+                headers: userHeaders(),
+              });
+              const body = (await res.json().catch(() => ({}))) as { error?: string };
+              if (!res.ok) {
+                msg(`删除失败：${body.error ?? `HTTP ${res.status}`}`);
+                return;
+              }
+              msg(`房间「${r.roomId}」已删除`);
+              await refreshRoomList();
+            } catch (err) {
+              msg(`删除失败：${err instanceof Error ? err.message : err}`);
+            }
+          })();
+        });
+        row.appendChild(delBtn);
+      }
+      listEl.appendChild(row);
+    }
+  } catch {
+    listEl.textContent = "";
+    const d = document.createElement("div");
+    d.className = "browse-empty";
+    d.textContent = "（房间列表加载失败）";
+    listEl.appendChild(d);
+  }
+}
+
+$("#refreshRooms").addEventListener("click", () => void refreshRoomList());
+void refreshRoomList();
+window.setInterval(refreshRoomList, 15_000);
+
+// ── 登录 ──────────────────────────────────────────────────
 
 const authModal = $("#authModal") as HTMLElement;
 

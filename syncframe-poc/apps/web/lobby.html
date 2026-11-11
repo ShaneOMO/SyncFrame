@@ -65,6 +65,11 @@
 
     label { display: block; color: var(--text-dim); font-size: var(--fs-caption); font-weight: 500; margin: var(--sp-4) 0 var(--sp-2); }
     label .opt { color: var(--text-faint); font-weight: 400; }
+    label.chk {
+      display: flex; flex-direction: row; align-items: center; gap: var(--sp-2);
+      color: var(--text); font-size: var(--fs-small); cursor: pointer; user-select: none;
+    }
+    label.chk input { width: auto; accent-color: var(--accent); margin: 0; }
     input { width: 100%; }
     main .card button:not(.ghost):not(.icon) { margin-top: var(--sp-4); width: 100%; padding: 10px 16px; font-weight: 600; }
 
@@ -90,7 +95,7 @@
     }
     .room-row {
       display: grid;
-      grid-template-columns: 200px minmax(0, 1fr) auto auto;
+      grid-template-columns: 200px minmax(0, 1fr) auto auto auto;
       align-items: center;
       gap: var(--sp-4);
       padding: 16px var(--sp-5);
@@ -126,7 +131,10 @@
 
     /* 房间行右侧「直接加入」 */
     .room-join { width: auto; margin-top: 0; padding: 6px 16px; font-size: var(--fs-small); font-weight: 600; flex: 0 0 auto; }
-    @media (max-width: 560px) { .room-join { grid-column: 1 / -1; } }
+    /* 房间行右侧「删除」（仅房主/管理员可见） */
+    .room-del { width: auto; margin-top: 0; padding: 6px 12px; font-size: var(--fs-small); flex: 0 0 auto; }
+    .room-del .ic { width: 13px; height: 13px; }
+    @media (max-width: 560px) { .room-join, .room-del { grid-column: auto; } }
 
     /* ── 弹窗 ── */
     .modal {
@@ -144,8 +152,20 @@
       max-height: 80vh; overflow-y: auto;
     }
     .modal-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-4); }
-    .modal-head h2 { font-size: var(--fs-title); display: flex; align-items: center; gap: var(--sp-2); flex: 1; }
-    .modal-head button.icon { width: 30px; height: 30px; padding: 0; margin-top: 0; }
+    /* h2 默认带下外边距，在 flex 头里会把标题+标签整体上移、与关闭按钮错位：清零 */
+    .modal-head h2 { font-size: var(--fs-title); display: flex; align-items: center; gap: var(--sp-2); flex: 1; margin: 0; }
+    /* 「需登录」做成醒目的警示胶囊，而不是弱化的灰字 */
+    .modal-head h2 .room-count {
+      margin-left: auto;
+      padding: 3px 10px;
+      border: 0.5px solid var(--warning-border);
+      border-radius: var(--radius-pill);
+      color: var(--warning);
+      font-size: var(--fs-caption);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .modal-head button.icon { width: 30px; height: 30px; padding: 0; margin-top: 0; flex: 0 0 auto; }
     #authSubmit, #createBtn, #joinBtn { width: 100%; margin-top: var(--sp-4); }
     #authMsg { min-height: 18px; font-size: var(--fs-caption); color: var(--warning); margin: var(--sp-2) 0 0; }
 
@@ -170,6 +190,7 @@
       <symbol id="i-video" viewBox="0 0 24 24"><path d="m16 13 5.2 3.1V7.9L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/></symbol>
       <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
       <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/></symbol>
     </defs>
   </svg>
 
@@ -250,8 +271,11 @@
         <input id="createName" type="text" maxlength="24" placeholder="例如：周末电影夜" autocomplete="off" />
         <label for="createRoomId">房间号 <span class="opt">（可选，3-24 位字母/数字/连字符，长期使用固定房间）</span></label>
         <input id="createRoomId" type="text" maxlength="24" placeholder="留空则自动生成" autocomplete="off" />
-        <label for="createInvite">邀请码 <span class="opt">（可选，4-16 位字母/数字）</span></label>
-        <input id="createInvite" type="text" maxlength="16" placeholder="留空则自动生成" autocomplete="off" />
+        <label class="chk" for="createNoInvite"><input id="createNoInvite" type="checkbox" checked /> 生成访问码 <span class="opt">（取消勾选则任何人凭房间号即可加入）</span></label>
+        <div id="createInviteWrap">
+          <label for="createInvite">访问码（邀请码） <span class="opt">（可选，4-16 位字母/数字，留空自动生成）</span></label>
+          <input id="createInvite" type="text" maxlength="16" placeholder="留空则自动生成" autocomplete="off" />
+        </div>
         <button id="createBtn" class="primary" aria-label="创建房间并成为房主">创建房间</button>
         <p id="createMsg" role="status" aria-live="polite" style="min-height:18px;font-size:var(--fs-caption);color:var(--warning);margin:var(--sp-2) 0 0"></p>
       </div>
@@ -268,7 +292,7 @@
       <p class="desc" style="margin:0 0 var(--sp-2)">通常直接点开房主分享的链接即可自动进房；这里手动输入房间号与邀请码。</p>
       <label for="joinRoom">房间号</label>
       <input id="joinRoom" type="text" maxlength="24" placeholder="例如：movie-night" autocomplete="off" />
-      <label for="joinCode">邀请码</label>
+      <label for="joinCode">访问码 <span class="opt">（房间未设置访问码时可留空，凭房间号直接加入）</span></label>
       <input id="joinCode" type="text" maxlength="16" placeholder="邀请码" autocomplete="off" />
       <label for="joinName">你的昵称</label>
       <input id="joinName" type="text" maxlength="24" placeholder="例如：小红" autocomplete="nickname" />
