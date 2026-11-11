@@ -499,6 +499,28 @@ export class RoomRegistry {
     }));
   }
 
+  /** 从播放列表移除媒体（仅房主调用方可用；字幕条目可单独删除，视频删除会连同字幕一起清理）。 */
+  removeMedia(roomId: string, mediaId: string, clientId: string): boolean {
+    const room = this.rooms.get(roomId);
+    if (!room) return false;
+    const entry = room.media.get(mediaId);
+    if (!entry) return false;
+    room.media.delete(mediaId);
+    // 视频删除时联动删除同目录自动注册的外挂字幕。
+    if (!SUBTITLE_EXTS.has(extOf(entry.name)) && entry.path !== undefined) {
+      const dir = entry.path.slice(0, entry.path.length - entry.name.length);
+      for (const [subId, sub] of room.media) {
+        if (sub.path !== undefined && sub.path.startsWith(dir) && SUBTITLE_EXTS.has(extOf(sub.name))) {
+          room.media.delete(subId);
+          this.audit({ roomId, action: "media:remove", clientId, mediaId: subId });
+        }
+      }
+    }
+    this.save();
+    this.audit({ roomId, action: "media:remove", clientId, mediaId });
+    return true;
+  }
+
   /** 公开房间列表（大厅展示）：房间号、房主昵称、创建时间、在线人数、视频数；
    *  hasInvite=false 表示该房间未设置访问码（凭房间号即可加入）；
    *  传入查看者用户名时标记 deletable（房主本人或管理员可删除房间）。 */

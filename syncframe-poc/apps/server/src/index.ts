@@ -37,6 +37,7 @@
  *      B 站：mcdn 可直连时下发 CDN 直链（浏览器直拉，服务器不耗带宽），否则下发 /stream 票据；两者均带回落地址
  *      OpenList：解析存储直链后统一下发 /stream 票据（网盘后端不放行 CORS，浏览器无法跨域拉流）
  *  - GET  /api/rooms/:id/media/:mediaId/stream?ticket=  流反代（透传 Range/HEAD；票据绑定已解析的上游地址；B 站/OpenList 按票据类型带上游头）
+ *  - DELETE /api/rooms/:id/media/:mediaId  从播放列表移除（仅房主；删除视频时联动移除同目录自动注册的字幕）
 
  *
  *  - WS   /ws?room=<id>（子协议 sf.token.<memberToken>）  同步房间（凭成员令牌入场）
@@ -768,6 +769,16 @@ async function handleListMedia(req: IncomingMessage, res: ServerResponse, roomId
   sendJson(res, 200, { media: list });
 }
 
+async function handleDeleteMedia(req: IncomingMessage, res: ServerResponse, roomId: string, mediaId: string): Promise<void> {
+  const member = requireMember(req, res, roomId, { hostOnly: true });
+  if (!member) return;
+  if (!registry.removeMedia(roomId, mediaId, member.clientId)) {
+    sendJson(res, 404, { error: "媒体不存在" });
+    return;
+  }
+  sendJson(res, 200, { ok: true });
+}
+
 // ── Bilibili 播放地址解析（凭证请求内即用即弃）────────────────────────────
 
 const BILIBILI_UA =
@@ -1279,6 +1290,9 @@ const server = createServer(async (req, res) => {
         return;
       }
       await handleJoinRoom(req, res, url.pathname.split("/")[3], await readBody(req));
+    } else if (url.pathname.startsWith("/api/rooms/") && req.method === "DELETE" && url.pathname.split("/")[4] === "media") {
+      const parts = url.pathname.split("/"); // ["","api","rooms",:id,"media",:mediaId]
+      await handleDeleteMedia(req, res, parts[3], parts[5]);
     } else if (url.pathname.startsWith("/api/rooms/") && req.method === "DELETE") {
       await handleDeleteRoom(req, res, url.pathname.split("/")[3]);
     } else if (url.pathname.startsWith("/api/rooms/") && req.method === "POST" && url.pathname.endsWith("/invite/rotate")) {

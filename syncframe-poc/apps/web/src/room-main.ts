@@ -1018,6 +1018,7 @@ async function refreshMediaList(): Promise<void> {
           })();
         });
         row.appendChild(btn);
+        if (role === "host") row.appendChild(makeDeleteBtn(item));
       } else if (role === "host") {
         // 房主点击播放列表条目即切换播放（已注册的 mediaId 直接广播 load）。
         row.classList.add("video-row");
@@ -1031,12 +1032,43 @@ async function refreshMediaList(): Promise<void> {
         });
         row.addEventListener("click", () => void client.hostLoad(item.mediaId, { name: item.name, size: item.size }));
         row.appendChild(play);
+        row.appendChild(makeDeleteBtn(item));
       }
       listEl.appendChild(row);
     }
   } catch {
     /* 清单刷新失败不阻塞主流程 */
   }
+}
+
+/** 房主专用的列表删除按钮：确认后调服务端移除并刷新列表。 */
+function makeDeleteBtn(item: MediaListItem): HTMLButtonElement {
+  const del = document.createElement("button");
+  del.className = "browse-pick";
+  del.textContent = "删除";
+  del.title = "从播放列表移除";
+  del.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!window.confirm(`确定从播放列表删除「${item.name}」吗？`)) return;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/media/${encodeURIComponent(item.mediaId)}`, {
+          method: "DELETE",
+          headers: authHeaders,
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { error?: string } | null;
+          setStatus(`删除失败: ${body?.error ?? res.status}`, true);
+          return;
+        }
+        setStatus(`已删除: ${item.name}`);
+        await refreshMediaList();
+      } catch (err) {
+        setStatus(`删除失败: ${err instanceof Error ? err.message : err}`, true);
+      }
+    })();
+  });
+  return del;
 }
 
 // ── HUD / 采样 ────────────────────────────────────────────
