@@ -112,6 +112,27 @@ function setMediaBadge(text: string, state: "none" | "loading" | "ok" | "fail" =
     "badge " + (state === "ok" ? "media-ok" : state === "loading" ? "media-loading" : state === "fail" ? "media-fail" : "");
 }
 
+/**
+ * 传输路径徽标（常驻）：直观看出当前媒体是浏览器直连还是经服务端反代。
+ * 直连不占服务器带宽；代理会把每个观众的视频流量都压到服务器上。
+ */
+const routeBadge = $("#routeBadge");
+function setRouteBadge(direct: boolean, reason?: string): void {
+  routeBadge.hidden = false;
+  routeBadge.textContent = direct ? "直连" : "代理";
+  routeBadge.className = `badge route ${direct ? "direct" : "proxy"}`;
+  routeBadge.title = direct
+    ? "浏览器直接连接源站拉流，不占用服务器带宽"
+    : `经服务端反代，占用服务器带宽${reason ? `（${reason}）` : ""}`;
+}
+
+function clearRouteBadge(): void {
+  routeBadge.hidden = true;
+  routeBadge.textContent = "";
+  routeBadge.className = "badge route";
+  routeBadge.title = "媒体传输路径";
+}
+
 // ── 媒体适配器 ────────────────────────────────────────────
 
 function makeClockAdapter(): { adapter: MediaAdapter; clock: VirtualMediaClock } {
@@ -296,18 +317,38 @@ async function probeDirect(url: string): Promise<boolean> {
   }
 }
 
-/** 按 grant 结果挑实际播放地址：直连优先（带宽走用户），失败回落反代。 */
-async function applyGrant(info: GrantResponse): Promise<{ url: string; audioUrl?: string; direct: boolean }> {
-  if (info.direct && info.fallbackUrl && !preferProxy) {
-    if (await probeDirect(info.url)) return { url: info.url, audioUrl: info.audioUrl, direct: true };
-    preferProxy = true;
-    setStatus("B 站直连不可用，已切换到服务端代理（画质不变，占用服务器带宽）", true);
+interface AppliedSource {
+  url: string;
+  audioUrl?: string;
+  /** true = 浏览器直连源站；false = 经服务端反代。 */
+  direct: boolean;
+  /** 走反代的原因（徽标 tooltip 展示）。 */
+  reason?: string;
+}
+
+/**
+ * 按 grant 结果挑实际播放地址：直连优先（带宽走用户），失败回落反代。
+ *
+ * 注意 `info.direct` 的三种取值：
+ * - `undefined`：非 B 站条目（直链 / OpenList），grant 给的就是源地址 → 浏览器直连；
+ * - `true`：B 站 CDN 地址可直连（不校验 Referer），仍需前端探测一次实际连通性；
+ * - `false`：服务端判定不可直连（CDN 主机要求 Referer）→ 只能反代。
+ */
+async function applyGrant(info: GrantResponse): Promise<AppliedSource> {
+  if (info.direct === undefined) {
+    return { url: info.url, audioUrl: info.audioUrl, direct: true };
   }
-  return {
+  const proxy = {
     url: info.fallbackUrl ?? info.url,
     audioUrl: info.fallbackAudioUrl ?? info.audioUrl,
     direct: false,
   };
+  if (info.direct && info.fallbackUrl && !preferProxy) {
+    if (await probeDirect(info.url)) return { url: info.url, audioUrl: info.audioUrl, direct: true };
+    preferProxy = true;
+    return { ...proxy, reason: "直连探测失败（网络到 CDN 不通）" };
+  }
+  return { ...proxy, reason: info.direct ? "本次会话已回落代理" : "该视频的 CDN 节点要求 Referer，无法直连" };
 }
 
 /** 匿名解析 B 站视频时的提示（绑定凭证后画质更高；凭证只存本浏览器）。 */
@@ -416,8 +457,9 @@ function mountFreshPlayer(): void {
   playerRef.current.addEventListener("error", (ev) => {
     if (!playerReady || !playerMediaId || recovering) return;
     if (!hasStartedPlayback) {
-      const detail = (ev as CustomEvent<{ message?: string }>).detail;
-      const reason = detail?.message ?? "";
+      // movi 的错误事件可能是 CustomEvent（detail.message）或 ErrorEvent（message），两种都取。
+      const detail = (ev as Event & { detail?: { message?: string } }).detail;
+      const reason = detail?.message ?? (ev as ErrorEvent).message ?? "";
       const networkLike = /fetch|network|http|range|timeout|failed|超时/i.test(reason);
       if (networkLike) {
         setMediaBadge("媒体加载失败", "fail");
@@ -457,6 +499,7 @@ async function recoverMedia(): Promise<void> {
     const src = await applyGrant(info);
     mountFreshPlayer();
     currentSourceDirect = src.direct;
+    setRouteBadge(src.direct, src.reason);
     playerReloading = true;
     setPlayerSources(src.url, src.audioUrl);
     resumeAfterReload(posMs, !wasPaused);
@@ -502,11 +545,13 @@ function makePlayerAdapter(): MediaAdapter {
     isBuffering: () => mediaBuffering,
     load: async (mediaId) => {
       setMediaBadge("加载中…", "loading");
+      clearRouteBadge();
       setStatus("正在获取媒体访问凭证…");
       const info = await fetchGrant(mediaId);
       const src = await applyGrant(info);
       mountFreshPlayer();
       currentSourceDirect = src.direct;
+      setRouteBadge(src.direct, src.reason);
       // 换源期间屏蔽控件事件转发：重载自发的 pause/seek 不是用户操作。
       playerReloading = true;
       setPlayerSources(src.url, src.audioUrl);

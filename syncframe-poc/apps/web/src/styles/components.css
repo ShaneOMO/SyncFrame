@@ -131,7 +131,7 @@ input[type="range"]:disabled { accent-color: var(--border-strong); }
 
 /* ── Badge / Chip（胶囊，仅文字 + 细边框） ──
    变体名被 room-main.ts 的 className 拼接依赖：host/viewer/media-ok/
-   media-loading/media-fail/conn/off —— 冻结。 */
+   media-loading/media-fail/conn/off/route —— 冻结。 */
 .badge, .chip {
   display: inline-flex; align-items: center; gap: var(--sp-1);
   padding: 3px 10px;
@@ -149,6 +149,9 @@ input[type="range"]:disabled { accent-color: var(--border-strong); }
 .badge.viewer { color: var(--accent); border-color: rgba(10, 132, 255, 0.35); }
 .badge.media-ok, .badge.conn { color: var(--success); border-color: var(--success-border); }
 .badge.media-fail, .badge.conn.off { color: var(--danger); border-color: var(--danger-border); }
+/* 传输路径：direct = 浏览器直连源站（不占服务器带宽）；proxy = 经服务端反代 */
+.badge.route.direct { color: var(--success); border-color: var(--success-border); }
+.badge.route.proxy { color: var(--warning); border-color: var(--warning-border); }
 
 /* ── 通用辅助 ── */
 .row { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
