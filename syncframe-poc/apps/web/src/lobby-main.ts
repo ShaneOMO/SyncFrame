@@ -156,7 +156,8 @@ $("#createBtn").addEventListener("click", async () => {
 $("#joinBtn").addEventListener("click", async () => {
   const joinMsg = $("#joinMsg");
   joinMsg.textContent = "";
-  const roomId = ($("#joinRoom") as HTMLInputElement).value.trim();
+  const roomId = ($("#joinRoom") as HTMLInputElement).value.trim().toLowerCase();
+  // 房间号服务端一律存小写：这里先归一，避免 hostSecret 的 sessionStorage 键大小写对不上。
   const codeRaw = ($("#joinCode") as HTMLInputElement).value.trim();
   const code = codeRaw ? codeRaw.toUpperCase() : undefined;
   const name = ($("#joinName") as HTMLInputElement).value.trim() || "Guest";

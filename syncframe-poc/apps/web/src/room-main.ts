@@ -17,19 +17,57 @@ import type { MediaAdapter } from "@syncframe/sync-protocol";
 import "movi-player/element/slim";
 import wasmUrl from "movi-player/movi.wasm?url";
 import { initBrowsePanel } from "./browse.ts";
-import { loadSession, clearSession } from "./session.ts";
+import { loadSession, clearSession, saveSession } from "./session.ts";
+import type { RoomSession } from "./session.ts";
 import { iconElement } from "./icons.ts";
 import { biliCredentialHeaders, loadBiliSessdata } from "./bili-credential.ts";
 
 const params = new URLSearchParams(location.search);
-const roomId = (params.get("room") || "").slice(0, 64);
+// 服务端房间号一律小写：URL 带大写时归一，否则会话/hostSecret 的键与 WS 鉴权都会对不上。
+const roomId = (params.get("room") || "").slice(0, 64).toLowerCase();
 const name = (params.get("name") || `Guest-${Math.random().toString(36).slice(2, 6)}`).slice(0, 24);
 const mode = params.get("mode") === "clock" ? "clock" : "player";
 const hardDriftMs = Number(params.get("hardDriftMs") ?? 1000);
 
 // ── P3 房间鉴权：无有效会话 → 回大厅（携带房间号便于重新加入）────────────────
 
-const session = roomId ? loadSession(roomId) : null;
+/**
+ * 房主静默重建会话：成员令牌过期/丢失时，凭本浏览器持有的 hostSecret 直接重新加入，
+ * 不需要邀请码或任何手动输入。返回 null 表示重建失败（房间已删除等），由调用方回大厅。
+ */
+async function rejoinAsHost(targetRoomId: string, hostSecret: string): Promise<RoomSession | null> {
+  try {
+    const res = await fetch(`/api/rooms/${encodeURIComponent(targetRoomId)}/join`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, hostSecret }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Record<string, unknown>;
+    if (typeof data.memberToken !== "string" || typeof data.clientId !== "string") return null;
+    const sess: RoomSession = {
+      roomId: targetRoomId,
+      memberToken: data.memberToken,
+      clientId: String(data.clientId),
+      role: "host",
+      name,
+      expiresAt: Number(data.expiresAt ?? 0),
+      hostSecret,
+      ...(typeof data.roomName === "string" && data.roomName ? { roomName: data.roomName } : {}),
+    };
+    saveSession(sess);
+    return sess;
+  } catch {
+    return null;
+  }
+}
+
+let session = roomId ? loadSession(roomId) : null;
+if (roomId && !session) {
+  // 房主先尝试静默重建：hostSecret 只存在于创建该房间的浏览器里，观众没有此键。
+  const hostSecret = sessionStorage.getItem(`syncframe-hostsecret-${roomId}`);
+  if (hostSecret) session = await rejoinAsHost(roomId, hostSecret);
+}
 if (!roomId || !session) {
   location.replace(`/lobby.html${roomId ? `?room=${encodeURIComponent(roomId)}&expired=1` : ""}`);
   throw new Error("等待重定向到大厅");
