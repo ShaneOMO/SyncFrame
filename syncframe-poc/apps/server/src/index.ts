@@ -1260,7 +1260,13 @@ const server = createServer(async (req, res) => {
       // P4 大厅房间列表（公开摘要：房间号/房主昵称/人数/视频数/是否有访问码/当前用户可否删除）。
       // 可选 Bearer userToken：登录后标记自己创建的房间，大厅据此展示「删除」按钮。
       const viewer = accounts.authenticate(bearerToken(req));
-      sendJson(res, 200, { rooms: registry.listRooms(viewer ?? undefined) });
+      // 在线人数以内存同步房间为准：注册表成员记录保留 12h（令牌有效期内可重连），
+      // 直接数它会把你已退出房间的人也算成"在线"。
+      const rooms = registry.listRooms(viewer ?? undefined).map((r) => ({
+        ...r,
+        memberCount: roomManager.peek(r.roomId)?.memberCount() ?? 0,
+      }));
+      sendJson(res, 200, { rooms });
     } else if (url.pathname === "/api/auth/login" && req.method === "POST") {
       // M2：登录接口限流（10 次/分钟/IP），配合用户名级失败锁定防撞库。
       if (!rateLimit("login", clientIp(req))) {
