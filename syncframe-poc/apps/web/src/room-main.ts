@@ -607,8 +607,10 @@ function fmtTimeShort(ms: number): string {
 const roomBadgeEl = $("#roomBadge");
 roomBadgeEl.textContent = "房间 ";
 const roomBadgeId = document.createElement("b");
-roomBadgeId.textContent = roomId;
+// 徽标优先展示创建时设置的房间名，房间号作为副信息附在后面。
+roomBadgeId.textContent = session.roomName ?? roomId;
 roomBadgeEl.appendChild(roomBadgeId);
+roomBadgeEl.appendChild(document.createTextNode(` · ${roomId}`));
 if (mode === "clock") roomBadgeEl.appendChild(document.createTextNode(" · clock"));
 const roleBadge = $("#roleBadge");
 roleBadge.textContent = role === "host" ? "房主" : "观众";

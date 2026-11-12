@@ -10,6 +10,8 @@ export interface RoomSession {
   name: string;
   roomId: string;
   expiresAt: number;
+  /** 房间展示名（创建时设置的房间名）；旧会话可能缺失，回退显示房间号。 */
+  roomName?: string;
   /** 仅房主会话持有：成员令牌过期后凭它重建房主身份。 */
   hostSecret?: string;
 }

@@ -106,6 +106,7 @@ function enterRoom(
     role: data.role === "host" ? "host" : "viewer",
     name,
     expiresAt: Number(data.expiresAt ?? 0),
+    ...(typeof data.roomName === "string" && data.roomName ? { roomName: data.roomName } : {}),
     ...(typeof data.hostSecret === "string" ? { hostSecret: data.hostSecret } : {}),
   });
   location.href = `/room.html?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(name)}`;

@@ -484,6 +484,8 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, body:
   const { room, member, hostSecret } = created;
   sendJson(res, 200, {
     roomId: room.roomId,
+    // 房间页徽标展示用（创建时的房间名）。
+    roomName: room.hostName,
     // 未生成访问码的房间返回 null，客户端不展示邀请链接。
     inviteCode: room.inviteCode,
     hostSecret,
@@ -514,6 +516,8 @@ async function handleJoinRoom(
     clientId: member.clientId,
     role: member.role,
     expiresAt: member.expiresAt,
+    // 房间页徽标展示用（创建时的房间名）。
+    roomName: registry.peek(roomId)?.hostName ?? "",
   });
 }
 
