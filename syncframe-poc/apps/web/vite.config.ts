@@ -1,10 +1,12 @@
 import { defineConfig } from "vite";
+import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
 
 // 测试时可经 SYNC_BACKEND_PORT 指向注入延迟的后端实例（默认 8787）
 const backend = `http://localhost:${process.env.SYNC_BACKEND_PORT ?? 8787}`;
 
 export default defineConfig({
+  plugins: [tailwindcss()],
   server: {
     port: 5173,
     proxy: {
