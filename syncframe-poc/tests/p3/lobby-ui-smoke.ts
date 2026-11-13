@@ -1,20 +1,20 @@
 /**
- * P3 大厅 UI 冒烟：真实 Vite + 服务端，Playwright 驱动浏览器验证
- * 「创建房间 → 跳转房间页 → WS 连接 → 成员/邀请码展示」全链路。
- * 运行：node --import tsx tests/p3/lobby-ui-smoke.ts
+ * P3 大厅 UI 冒烟（React 版）：真实 Vite + 服务端，Playwright 驱动浏览器验证
+ * 「登录 → 配置 OpenList → 创建房间 → 邀请链接自动进房 → 选片同步」全链路。
+ * 选择器基于 React 版 DOM（角色/文本/placeholder），运行：node --import tsx tests/p3/lobby-ui-smoke.ts
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
-import { chromium } from "playwright-core";
+import { chromium, type Page } from "playwright-core";
 import { startOpenListStub } from "./openlist-stub.ts";
-import { ADMIN_PASS, ADMIN_USER, createRoom, joinRoom, repoRoot } from "./room-api.ts";
+import { ADMIN_PASS, ADMIN_USER, repoRoot } from "./room-api.ts";
 
 const BACKEND_PORT = 8940;
 const STUB_PORT = 8941;
 const WEB_PORT = 5940;
+const WEB = `http://localhost:${WEB_PORT}`;
 const children: ChildProcess[] = [];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,8 +35,20 @@ async function waitHttp(url: string, timeoutMs = 20_000): Promise<void> {
   throw new Error(`等待超时: ${url}`);
 }
 
+/** 等待房间页 __sync 测试句柄连接成功且角色匹配。 */
+async function waitSyncRole(page: Page, role: "host" | "viewer"): Promise<void> {
+  await page.waitForFunction(
+    (r) => {
+      const s = (window as unknown as { __sync?: { sample: () => { connected: boolean; role: string } } }).__sync;
+      return Boolean(s && s.sample().connected && s.sample().role === r);
+    },
+    role,
+    { timeout: 15_000 },
+  );
+}
+
 async function main(): Promise<void> {
-  console.log("\n=== P3 大厅 UI 冒烟 ===\n");
+  console.log("\n=== P3 大厅 UI 冒烟（React 版） ===\n");
   const stub = await startOpenListStub(STUB_PORT);
   const server = spawn(process.execPath, ["--import", "tsx", "apps/server/src/index.ts"], {
     cwd: repoRoot,
@@ -59,7 +71,7 @@ async function main(): Promise<void> {
   vite.stderr?.on("data", (d) => process.stderr.write(d));
   children.push(vite);
   await waitHttp(`http://localhost:${BACKEND_PORT}/api/health`);
-  await waitHttp(`http://localhost:${WEB_PORT}/lobby.html`);
+  await waitHttp(`${WEB}/lobby.html`);
 
   const executablePath = [
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -69,102 +81,97 @@ async function main(): Promise<void> {
 
   const browser = await chromium.launch({ executablePath, headless: true });
   try {
-    // 场景 1：房主创建房间 → 房间页 → 选片面板加载 → 邀请码展示
+    // ── 场景 1：房主链路 ─────────────────────────────
     const ctx1 = await browser.newContext();
     const host = await ctx1.newPage();
     const consoleErrors: string[] = [];
     host.on("console", (m) => {
       if (m.type() === "error") consoleErrors.push(m.text());
     });
-    await host.goto(`http://localhost:${WEB_PORT}/lobby.html`, { waitUntil: "domcontentloaded" });
+    await host.goto(`${WEB}/lobby.html`, { waitUntil: "domcontentloaded" });
+    await host.getByRole("button", { name: "创建房间" }).first().waitFor();
     check("大厅页加载无 JS 错误", consoleErrors.length === 0, consoleErrors.join(" | "));
-    // 未登录：创建弹窗内只显示登录提示（游客只能加入房间）
-    check("游客态隐藏创建房间表单", await host.locator("#createForm").isHidden());
-    await host.click("#openCreateBtn");
-    check("游客态显示登录提示", await host.locator("#createGate").isVisible());
-    await host.click("#createClose");
-    // 登录管理员；登录后点用户名进入「账户设置」页配置 OpenList provider（指向桩）
-    await host.click("#loginBtn");
-    await host.fill("#authUsername", ADMIN_USER);
-    await host.fill("#authPassword", ADMIN_PASS);
-    await host.click("#authSubmit");
-    await host.waitForSelector("#authModal[hidden]", { state: "attached", timeout: 10_000 });
-    check("登录后回到大厅", true);
-    check("管理员显示用户管理入口", await host.locator("#adminBtn").isVisible());
-    await host.click("#loginBtn"); // 用户名按钮 → 账户设置页
+
+    // 未登录点「创建房间」→ 弹出登录框（游客只能加入房间）
+    await host.getByRole("button", { name: "创建房间" }).first().click();
+    const authDialog = host.getByRole("dialog");
+    await authDialog.getByRole("heading", { name: "登录" }).waitFor();
+    check("游客态创建房间弹出登录框", true);
+    await host.keyboard.press("Escape");
+
+    // 登录管理员
+    await host.getByRole("button", { name: "登录", exact: true }).click();
+    await authDialog.getByLabel("用户名").fill(ADMIN_USER);
+    await authDialog.getByLabel("密码").fill(ADMIN_PASS);
+    await authDialog.getByRole("button", { name: "登录", exact: true }).click();
+    await host.getByRole("button", { name: ADMIN_USER }).waitFor({ timeout: 10_000 });
+    check("登录后顶栏显示用户名", true);
+    check("管理员显示用户管理入口", await host.getByRole("button", { name: "用户管理" }).isVisible());
+
+    // 账户设置：添加 OpenList provider（指向桩）
+    await host.getByRole("button", { name: ADMIN_USER }).click();
     await host.waitForURL(/settings\.html/, { timeout: 10_000 });
-    await host.waitForFunction(() => document.querySelector("[data-who]")?.textContent?.length, { timeout: 10_000 });
-    check("账户设置页打开", true);
-    check("管理员显示用户管理页签", await host.locator("[data-nav='users']").isVisible());
-    await host.selectOption("[data-kind]", "openlist");
-    await host.fill("[data-label]", "桩");
-    await host.fill("[data-baseurl]", `http://localhost:${STUB_PORT}`);
-    await host.fill("[data-username]", "stub");
-    await host.fill("[data-password]", "stub");
-    await host.click("[data-add]");
-    await host.waitForFunction(() => document.querySelector("[data-msg]")?.textContent === "已保存", { timeout: 10_000 });
+    await host.getByRole("button", { name: "用户管理" }).waitFor();
+    check("账户设置页打开（管理员含用户管理页签）", true);
+    await host.getByPlaceholder("名称（如：家里 OpenList）").fill("桩");
+    await host.getByPlaceholder("https://openlist.example.com").fill(`http://localhost:${STUB_PORT}`);
+    await host.getByPlaceholder("OpenList 用户名").fill("stub");
+    await host.getByPlaceholder("OpenList 密码").fill("stub");
+    await host.getByRole("button", { name: "添加", exact: true }).click();
+    await host.getByText("已保存").waitFor({ timeout: 10_000 });
     check("添加 OpenList provider", true);
-    await host.click(".topnav .nav-back"); // 返回大厅
+
+    // 回大厅创建房间
+    await host.getByRole("button", { name: "← 返回大厅" }).click();
     await host.waitForURL(/lobby\.html/, { timeout: 10_000 });
-    await host.click("#openCreateBtn"); // 打开创建房间弹窗
-    await host.fill("#createName", "UI房主");
-    await host.click("#createBtn");
+    await host.getByRole("main").getByRole("button", { name: "创建房间" }).click();
+    const createDialog = host.getByRole("dialog");
+    await createDialog.getByLabel(/房间名/).fill("UI房间");
+    await createDialog.getByRole("button", { name: "创建房间" }).click();
     await host.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
     const roomUrl = new URL(host.url());
     const roomId = roomUrl.searchParams.get("room") ?? "";
-    check("创建后跳转房间页", roomUrl.pathname === "/room.html" && roomId.length === 6);
-    await host.waitForFunction(
-      () => {
-        const s = (window as unknown as { __sync?: { sample: () => { connected: boolean; role: string } } }).__sync;
-        return s && s.sample().connected && s.sample().role === "host";
-      },
-      { timeout: 15_000 },
-    );
+    check("创建后跳转房间页", roomUrl.pathname === "/room.html" && roomId.length === 6, `roomId=${roomId}`);
+    await waitSyncRole(host, "host");
     check("房主 WS 已连接", true);
     const invite = await host.evaluate(() => sessionStorage.getItem(`syncframe-invite-${new URL(location.href).searchParams.get("room")}`) ?? "");
     check("邀请码已存会话（8 位）", /^[A-Z2-9]{8}$/.test(invite), invite);
-    check("选片入口（添加影片）对房主可见", await host.locator("#addMediaBtn").isVisible());
-    await host.click("#addMediaBtn");
-    check("OpenList 媒体库页签可见", await host.locator("#tabOpenlist").isVisible());
-    await host.click("#tabOpenlist"); // 切到媒体库页签
-    check("浏览面板含 provider 选择器", (await host.locator("#browseProvider option").allTextContents()).some((t) => t.includes("桩")));
-    await host.waitForSelector("#browseList .browse-row", { timeout: 10_000 });
-    check("目录列表已加载（根目录含 movies）", (await host.locator("#browseList .browse-row").allTextContents()).join(" ").includes("movies"));
 
-    // 场景 2：观众点开邀请链接自动进房（无需手动输入邀请码）→ 无选片面板 → 成员列表出现
-    const ctx2 = await browser.newContext();
-    const viewer = await ctx2.newPage();
-    await viewer.goto(`http://localhost:${WEB_PORT}/lobby.html?room=${roomId}&key=${invite}&name=${encodeURIComponent("UI观众")}`, { waitUntil: "domcontentloaded" });
-    // 链接形态：房主页邀请链接输入框应包含 room 与 key
-    const inviteLinkVal = await host.locator("#inviteLink").inputValue();
+    // 邀请链接携带 room+key
+    await host.getByRole("button", { name: "邀请" }).click();
+    const inviteLinkVal = await host.locator("#invite-link").inputValue();
     check(
       "房主邀请链接携带 room+key",
       inviteLinkVal.includes(`room=${roomId}`) && inviteLinkVal.includes(`key=${invite}`),
       inviteLinkVal,
     );
-    await viewer.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
-    await viewer.waitForFunction(
-      () => {
-        const s = (window as unknown as { __sync?: { sample: () => { connected: boolean; role: string } } }).__sync;
-        return s && s.sample().connected && s.sample().role === "viewer";
-      },
-      { timeout: 15_000 },
-    );
-    check("观众 WS 已连接（viewer 角色）", true);
-    check("观众无添加影片入口", await viewer.locator("#addMediaBtn").isHidden());
-    await sleep(800);
-    const memberText = await host.locator("#members").innerText();
-    check("房主看到观众成员", memberText.includes("UI观众"), memberText.replace(/\n/g, " "));
 
-    // 场景 3：房主进入 /movies 选片 → 双方都收到媒体状态
-    await host.click("#browseList .browse-row:has-text('movies')");
-    await host.waitForSelector("#browseList .browse-row.video", { timeout: 10_000 });
-    await host.click("#browseList .browse-row.video >> nth=0");
+    // 添加影片弹窗：OpenList 媒体库页签 + 目录浏览
+    await host.getByRole("button", { name: "＋ 添加影片" }).click();
+    const mediaDialog = host.getByRole("dialog");
+    await mediaDialog.getByRole("tab", { name: "OpenList 媒体库" }).click();
+    await mediaDialog.getByText("桩").first().waitFor();
+    check("浏览面板含 provider（桩）", true);
+    await mediaDialog.getByText("movies", { exact: true }).waitFor({ timeout: 10_000 });
+    check("目录列表已加载（根目录含 movies）", true);
+
+    // ── 场景 2：游客点开邀请链接自动进房 ──────────────
+    const ctx2 = await browser.newContext();
+    const viewer = await ctx2.newPage();
+    await viewer.goto(`${WEB}/lobby.html?room=${roomId}&key=${invite}&name=${encodeURIComponent("UI观众")}`, { waitUntil: "domcontentloaded" });
+    await viewer.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
+    await waitSyncRole(viewer, "viewer");
+    check("游客经邀请链接自动进房（viewer 角色）", true);
+    check("观众无添加影片入口", (await viewer.getByRole("button", { name: "＋ 添加影片" }).count()) === 0);
+    await sleep(800);
+    check("房主看到观众成员", (await host.locator("body").innerText()).includes("UI观众"));
+
+    // ── 场景 3：房主选片 → 双方都收到媒体状态 ─────────
+    await mediaDialog.getByText("movies", { exact: true }).click();
+    await mediaDialog.getByText("a.mkv", { exact: true }).waitFor({ timeout: 10_000 });
+    await mediaDialog.locator("div.border-b", { hasText: "a.mkv" }).getByRole("button", { name: "添加" }).click();
     // 房主无回声（服务端不回显发送者）：以媒体徽标 + 观众端 appliedMediaId 为准
-    await host.waitForFunction(
-      () => document.querySelector("#mediaBadge")?.textContent?.startsWith("就绪"),
-      { timeout: 20_000 },
-    );
+    await host.getByText(/^就绪/).first().waitFor({ timeout: 20_000 });
     check("房主媒体载入就绪", true);
     const viewerMedia = await viewer.waitForFunction(
       () => {
@@ -174,7 +181,8 @@ async function main(): Promise<void> {
       { timeout: 15_000 },
     );
     check("观众同步收到 mediaId", String(await viewerMedia.jsonValue()).startsWith("m_"));
-    check("观众媒体徽标就绪", (await viewer.locator("#mediaBadge").innerText()).startsWith("就绪"));
+    await viewer.getByText(/^就绪/).first().waitFor({ timeout: 10_000 });
+    check("观众媒体徽标就绪", true);
 
     console.log(failures === 0 ? "\n大厅 UI 冒烟通过 ✔" : `\n${failures} 项失败 ✘`);
     process.exitCode = failures === 0 ? 0 : 1;

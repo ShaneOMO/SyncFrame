@@ -228,13 +228,14 @@ function LobbyPage() {
     setJoinOpen(true);
   };
 
-  const submitJoin = async () => {
+  /** 加入房间核心逻辑：手动提交与邀请链接自动加入共用（不依赖弹窗内的按钮 ref）。 */
+  const doJoin = async (roomIdRaw: string, codeRaw: string, nameRaw: string) => {
     setJoinErr("");
-    const roomId = joinRoom.trim().toLowerCase();
-    const codeRaw = joinCode.trim();
-    const code = codeRaw ? codeRaw.toUpperCase() : undefined;
+    const roomId = roomIdRaw.trim().toLowerCase();
+    const trimmedCode = codeRaw.trim();
+    const code = trimmedCode ? trimmedCode.toUpperCase() : undefined;
     // 昵称留空时服务端会回落到登录用户名（未登录才是 Guest）。
-    const name = joinName.trim();
+    const name = nameRaw.trim();
     if (!roomId) {
       setJoinErr("请填写房间号");
       return;
@@ -260,18 +261,25 @@ function LobbyPage() {
     }
   };
 
-  // 邀请链接自动加入（?room=&key=），与旧行为一致。
-  const autoJoinFired = useRef(false);
+  const submitJoin = () => void doJoin(joinRoom, joinCode, joinName);
+
+  // 邀请链接自动加入（?room=&key=）：游客点开链接直接进房，无需任何点击。
+  // 注意不能用 ref 防重入：StrictMode 开发态会「 effect → cleanup → effect 」，
+  // ref 防重入会让第二次 effect 直接返回，而第一次的定时器已被 cleanup 清掉，导致永远不触发。
+  // 正确模式：effect 里总是调度、cleanup 清理，重挂载后自然只生效一次。
   useEffect(() => {
-    if (autoJoinFired.current) return;
-    if (params.get("room") && linkKey) {
-      autoJoinFired.current = true;
-      setJoinCode(linkKey);
-      if (params.get("name")) setJoinName(params.get("name")!);
-      // 等首帧渲染后触发，与旧版 click() 时序等价。
-      const t = window.setTimeout(() => joinBtnRef.current?.click(), 0);
-      return () => window.clearTimeout(t);
-    }
+    const linkRoom = params.get("room");
+    if (!linkRoom || !linkKey) return;
+    setJoinRoom(linkRoom);
+    setJoinCode(linkKey);
+    const linkName = params.get("name") ?? "";
+    if (linkName) setJoinName(linkName);
+    // 打开弹窗展示进度/错误（失败时用户可直接在弹窗里重试）。
+    setJoinOpen(true);
+    // 等首帧渲染后触发，与旧版 click() 时序等价。
+    const t = window.setTimeout(() => void doJoin(linkRoom, linkKey, linkName), 0);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -324,7 +332,7 @@ function LobbyPage() {
                 {rooms !== null && rooms.length > 0 ? `${rooms.length} 个房间` : ""}
               </span>
             </CardTitle>
-            <CardDescription>正在同步观影的房间。点「直接加入」，输入访问码就能进。</CardDescription>
+            <CardDescription>正在同步观影的房间。点「立即加入」即可进房；游客点开房主分享的链接可免输入直接进。</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="overflow-hidden rounded-lg border">
@@ -342,20 +350,17 @@ function LobbyPage() {
                     key={r.roomId}
                     className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-3.5 transition-colors last:border-b-0 hover:bg-muted/50"
                   >
-                    <span className="max-w-[200px] truncate rounded-md bg-primary/10 px-2 py-1 font-mono text-sm font-semibold text-primary">
-                      {r.roomId}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium">
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
                       {r.roomName}
                       <span className="ml-1 font-normal text-muted-foreground">· {r.hostName}</span>
                     </span>
                     <span className="whitespace-nowrap text-xs text-muted-foreground">
-                      {r.memberCount} 人在线 · {r.mediaCount} 个视频 · {r.hasInvite ? "凭访问码加入" : "无需访问码"}
+                      {r.memberCount} 人在线 · {r.mediaCount} 个视频
                     </span>
                     <div className="flex items-center gap-2">
                       <Button size="sm" onClick={() => openJoin(r.roomId)}>
                         <Play className="size-3.5" />
-                        直接加入
+                        立即加入
                       </Button>
                       {r.deletable && (
                         <Button size="sm" variant="destructive" onClick={() => setDeleteTarget(r)}>
@@ -558,7 +563,7 @@ function LobbyPage() {
       <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除房间「{deleteTarget?.roomId}」？</AlertDialogTitle>
+            <AlertDialogTitle>删除房间「{deleteTarget?.roomName}」？</AlertDialogTitle>
             <AlertDialogDescription>删除后无法恢复，房间内所有成员都会被请出。</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
