@@ -24,7 +24,8 @@
  *  - GET  /api/rooms                                   公开房间列表（大厅；带 userToken 时标记可删除的房间）
  *  - POST /api/rooms            (Bearer userToken) {name, roomId?, inviteCode?, noInvite?} → {roomId, inviteCode|null, memberToken, ...}
  *                                                    （游客 401；noInvite=true 则不生成访问码，凭房间号即可加入）
- *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}（公开；未设访问码的房间可省略 inviteCode）
+ *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}（公开；未设访问码的房间可省略 inviteCode；
+ *                                                    可选 Bearer userToken：登录用户未填昵称时用其用户名）
  *  - DELETE /api/rooms/:id      (Bearer userToken)   删除房间（仅房主本人或管理员）；房间只有被删除才会消失
  *  - GET  /api/browse?provider=&path=&page=           列目录（仅房主本人账户 + X-User-Token）
  *  - GET  /api/search?provider=&keywords=&parent=&page= 搜索（同上）
@@ -502,7 +503,10 @@ async function handleJoinRoom(
   roomId: string,
   body: string,
 ): Promise<void> {  const parsed = readJsonBody(body);
-  const name = typeof parsed.name === "string" ? parsed.name : "Guest";
+  // 可选 Bearer userToken：登录用户未填昵称（或仍是默认 Guest 名）时用其用户名。
+  const username = accounts.authenticate(bearerToken(req));
+  let name = typeof parsed.name === "string" ? parsed.name.trim() : "";
+  if (username && (!name || /^guest/i.test(name))) name = username;
   const inviteCode = typeof parsed.inviteCode === "string" ? parsed.inviteCode : undefined;
   const hostSecret = typeof parsed.hostSecret === "string" ? parsed.hostSecret : undefined;
   const member = registry.joinRoom(roomId, name, { inviteCode, hostSecret });
@@ -516,6 +520,7 @@ async function handleJoinRoom(
     clientId: member.clientId,
     role: member.role,
     expiresAt: member.expiresAt,
+    name: member.name,
     // 房间页徽标展示用（创建时的房间名）。
     roomName: registry.peek(roomId)?.hostName ?? "",
   });

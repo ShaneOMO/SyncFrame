@@ -232,7 +232,8 @@ function LobbyPage() {
     const roomId = joinRoom.trim().toLowerCase();
     const codeRaw = joinCode.trim();
     const code = codeRaw ? codeRaw.toUpperCase() : undefined;
-    const name = joinName.trim() || "Guest";
+    // 昵称留空时服务端会回落到登录用户名（未登录才是 Guest）。
+    const name = joinName.trim();
     if (!roomId) {
       setJoinErr("请填写房间号");
       return;
@@ -241,12 +242,16 @@ function LobbyPage() {
     try {
       // 房主重建会话：本浏览器若持有该房间的 hostSecret，自动带上。
       const hostSecret = sessionStorage.getItem(`syncframe-hostsecret-${roomId}`) ?? undefined;
-      const data = await postJson(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
-        name,
-        ...(code ? { inviteCode: code } : {}),
-        ...(hostSecret ? { hostSecret } : {}),
-      });
-      enterRoom(roomId, data, name);
+      const data = await postJson(
+        `/api/rooms/${encodeURIComponent(roomId)}/join`,
+        {
+          name,
+          ...(code ? { inviteCode: code } : {}),
+          ...(hostSecret ? { hostSecret } : {}),
+        },
+        userRef.current?.token,
+      );
+      enterRoom(roomId, data, typeof data.name === "string" && data.name ? data.name : name || "Guest");
     } catch (err) {
       setJoinErr(`加入失败：${err instanceof Error ? err.message : err}`);
     } finally {
@@ -524,7 +529,7 @@ function LobbyPage() {
               <Input
                 id="join-name"
                 maxLength={24}
-                placeholder="例如：小红"
+                placeholder={user ? `${user.username}（留空即用登录名）` : "例如：小红"}
                 autoComplete="nickname"
                 value={joinName}
                 onChange={(e) => setJoinName(e.target.value)}
