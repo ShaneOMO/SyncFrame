@@ -247,7 +247,7 @@ async function applyGrant(info: GrantResponse, f: EngineFlags): Promise<AppliedS
     f.preferProxy = true;
     return { ...proxy, reason: "直连探测失败（网络到 CDN 不通）" };
   }
-  return { ...proxy, reason: info.direct ? "本次会话已回落代理" : "该视频的 CDN 节点要求 Referer，无法直连" };
+  return { ...proxy, reason: info.direct ? "本次会话已回落到代理" : "该视频的 CDN 节点要求 Referer，无法直连" };
 }
 
 export function fmtTime(ms: number): string {
@@ -316,7 +316,7 @@ export function createEngine(ctx: EngineContext): Engine {
         location.replace(`/lobby.html?room=${encodeURIComponent(ctx.roomId)}&expired=1`);
       }
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(`媒体授权失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`);
+      throw new Error(`媒体授权失败（HTTP ${res.status}）：${body.error ?? "未知错误"}`);
     }
     return (await res.json()) as GrantResponse;
   };
@@ -355,19 +355,19 @@ export function createEngine(ctx: EngineContext): Engine {
         const networkLike = /fetch|network|http|range|timeout|failed|超时/i.test(reason);
         if (networkLike) {
           ctx.ui.setMediaBadge("媒体加载失败", "fail");
-          ctx.ui.setStatus(`媒体加载失败（网络/源站/跨域错误${reason ? `：${reason.slice(0, 120)}` : ""}），请重试或更换视频`, true);
+          ctx.ui.setStatus(`媒体加载失败（网络、源站或跨域问题${reason ? `：${reason.slice(0, 120)}` : ""}），请重试或换源`, true);
         } else {
           ctx.ui.setMediaBadge("媒体解码失败", "fail");
-          ctx.ui.setStatus("媒体解码失败（初始载入阶段，非签名问题），请更换视频", true);
+          ctx.ui.setStatus("媒体解码失败（初始载入阶段，不是签名问题），请更换视频", true);
         }
         return;
       }
       f.recovering = true;
       if (f.currentSourceDirect) {
         f.preferProxy = true;
-        ctx.ui.setStatus("B 站直连失败，切换到服务端代理后重试…", true);
+        ctx.ui.setStatus("B 站直连失败，改用服务端代理重试…", true);
       } else {
-        ctx.ui.setStatus("媒体加载/播放出错（可能是签名过期），正在用新凭证恢复…", true);
+        ctx.ui.setStatus("播放出错（可能是签名过期），正在换新凭证恢复…", true);
       }
       ctx.ui.setMediaBadge("媒体错误，正在恢复…", "fail");
       void recoverMedia().finally(() => {
@@ -395,8 +395,8 @@ export function createEngine(ctx: EngineContext): Engine {
       const fresh = ctx.getPlayer()!;
       setPlayerSources(fresh, src.url, src.audioUrl);
       resumeAfterReload(posMs, !wasPaused);
-      ctx.ui.setMediaBadge(`就绪: ${info.name}`, "ok");
-      ctx.ui.setStatus(`已重新获取地址并恢复播放: ${info.name}（回到 ${fmtTime(posMs)}）`);
+      ctx.ui.setMediaBadge(`就绪 · ${info.name}`, "ok");
+      ctx.ui.setStatus(`已重新获取地址并恢复播放：${info.name}（回到 ${fmtTime(posMs)}）`);
     } catch (err) {
       f.playerReloading = false;
       ctx.ui.setMediaBadge("媒体恢复失败", "fail");
@@ -453,11 +453,11 @@ export function createEngine(ctx: EngineContext): Engine {
         f.hasStartedPlayback = false;
         f.lastConfirmedPosMs = 0;
         f.wantPlay = false;
-        ctx.ui.setMediaBadge(`就绪: ${info.name}`, "ok");
+        ctx.ui.setMediaBadge(`就绪 · ${info.name}`, "ok");
         ctx.ui.setStatus(
           info.size > 0
-            ? `已载入: ${info.name}（${(info.size / 1024 / 1024).toFixed(1)} MiB）`
-            : `已载入: ${info.name}`,
+            ? `已载入：${info.name}（${(info.size / 1024 / 1024).toFixed(1)} MiB）`
+            : `已载入：${info.name}`,
         );
         if (info.anonymous) showBiliCredentialHint();
         ctx.hooks.onMediaListChanged();

@@ -195,14 +195,14 @@ function SettingsPage() {
 
   const onAddProvider = async (): Promise<void> => {
     if (kind === "bilibili") {
-      toast("B 站凭证只保存在本浏览器：请点「扫码绑定 B 站」，无需添加 provider");
+      toast("B 站凭证只存在本浏览器，不用添加：直接点「扫码绑定 B 站」");
       return;
     }
     const baseUrl = pBaseUrl.trim();
     const username = pUsername.trim();
     const password = pPassword;
     if (!baseUrl || !username || !password) {
-      toast("请填写完整的 OpenList 地址、用户名与密码");
+      toast("请填完整的 OpenList 地址、用户名和密码");
       return;
     }
     const m = await fetchMe();
@@ -248,7 +248,7 @@ function SettingsPage() {
         setQrStatus("已扫码，请在手机上确认登录…");
       } else if (body.status === "expired") {
         stopQrPolling();
-        setQrStatus("二维码已过期，请点击按钮重新获取");
+        setQrStatus("二维码已过期，点按钮重新获取");
       } else if (body.status === "confirmed") {
         stopQrPolling();
         setQrVisible(false);
@@ -258,7 +258,7 @@ function SettingsPage() {
           return;
         }
         setQrStatus(`绑定成功${body.uname ? `：${body.uname}` : ""}，凭证已保存在本浏览器`);
-        toast("B 站账号已绑定到本浏览器（服务器不保存）");
+        toast("B 站账号已绑定本浏览器（服务器不保存）");
         const m = await fetchMe();
         if (m) setMe(m);
       }
@@ -351,8 +351,7 @@ function SettingsPage() {
   };
 
   if (!user || !me) {
-    return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">加载中…</div>;
-  }
+    return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">加载中…</div>;  }
 
   const providers = me.providers;
 
@@ -385,7 +384,7 @@ function SettingsPage() {
               onClick={() => switchTab("providers")}
             >
               <Video className="size-4" />
-              视频 Provider
+              视频源
             </Button>
             {isAdmin && (
               <Button
@@ -415,9 +414,9 @@ function SettingsPage() {
           {tab === "providers" ? (
             <>
               <div className="mb-6">
-                <h1 className="mb-2 text-xl font-bold tracking-tight">视频 Provider</h1>
+                <h1 className="mb-2 text-xl font-bold tracking-tight">视频源</h1>
                 <p className="text-sm leading-7 text-muted-foreground">
-                  管理你自己的 OpenList 网盘；B 站凭证只保存在本浏览器，服务器不会保存。
+                  管理你的 OpenList 网盘。B 站凭证只存在本浏览器，服务器不保存。
                 </p>
               </div>
 
@@ -426,7 +425,7 @@ function SettingsPage() {
               </h2>
               {providers.length === 0 && !biliBound ? (
                 <div className="rounded-lg border py-5 text-center text-sm text-muted-foreground">
-                  （尚未配置 provider；可添加 OpenList，或在房间里直接用直链、B 站链接）
+                  还没有配置视频源。可以添加 OpenList，或者进房后直接贴直链、B 站链接。
                 </div>
               ) : (
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
@@ -437,7 +436,7 @@ function SettingsPage() {
                           <Badge variant="outline" className="rounded-full text-[11px] font-normal">哔哩哔哩</Badge>
                           <b className="truncate">本浏览器已绑定</b>
                         </CardTitle>
-                        <CardDescription>凭证保存在本浏览器，服务端不保存</CardDescription>
+                        <CardDescription>凭证只存在本浏览器，服务器不保存</CardDescription>
                       </CardHeader>
                       <CardContent>
                         <Button
@@ -466,7 +465,7 @@ function SettingsPage() {
                           <b className="truncate">{p.label}</b>
                         </CardTitle>
                         <CardDescription className="truncate">
-                          {p.kind === "openlist" ? `${p.baseUrl} · ${p.username}` : "B 站凭证保存在浏览器，服务端不保存"}
+                          {p.kind === "openlist" ? `${p.baseUrl} · ${p.username}` : "B 站凭证存在浏览器，服务端不保存"}
                         </CardDescription>
                       </CardHeader>
                       <CardContent>
@@ -484,7 +483,7 @@ function SettingsPage() {
               )}
 
               <h2 className="mt-6 mb-3 text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-                添加 provider
+                添加视频源
               </h2>
               <Card className="p-5">
                 <div className="flex flex-col gap-3">
@@ -494,7 +493,7 @@ function SettingsPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="openlist">OpenList（自建网盘）</SelectItem>
-                      <SelectItem value="bilibili">哔哩哔哩（凭证保存在本浏览器）</SelectItem>
+                      <SelectItem value="bilibili">哔哩哔哩（凭证存本浏览器）</SelectItem>
                     </SelectContent>
                   </Select>
 
@@ -529,10 +528,10 @@ function SettingsPage() {
                     </div>
                   ) : (
                     <div className="flex flex-col gap-3">
-                      <p className="text-xs leading-6 text-muted-foreground">
+                      <p className="text-xs leading-6 break-words text-muted-foreground">
                         {biliBound
-                          ? "本浏览器已绑定 B 站账号：播放时使用该凭证解析（服务器不会保存，也不会共享给其他人）。"
-                          : "本浏览器未绑定：匿名解析，画质上限 720P，番剧/会员内容可能无法播放。"}
+                          ? "本浏览器已绑定 B 站账号，播放时用该凭证解析（服务器不保存，也不会共享给他人）。"
+                          : "本浏览器未绑定：匿名解析，画质最高 720P，番剧 / 会员内容可能播不了。"}
                       </p>
                       <div className="flex flex-wrap gap-2">
                         <Button variant="outline" onClick={() => void startBiliQrLogin()}>
@@ -558,10 +557,10 @@ function SettingsPage() {
                   )}
 
                   <Button className="self-start" onClick={() => void onAddProvider()}>
-                    添加 provider
+                    添加
                   </Button>
-                  <p className="text-xs leading-6 text-muted-foreground">
-                    「直链」「B 站视频」无需配置：在房间里点「添加影片」直接粘贴地址 / BV 号即可。
+                  <p className="text-xs leading-6 break-words text-muted-foreground">
+                    「直链」「B 站视频」不用配置：进房后点「添加影片」，直接贴地址或 BV 号就行。
                   </p>
                 </div>
               </Card>
@@ -571,7 +570,7 @@ function SettingsPage() {
               <div className="mb-6">
                 <h1 className="mb-2 text-xl font-bold tracking-tight">用户管理</h1>
                 <p className="text-sm leading-7 text-muted-foreground">
-                  创建、删除账户或重置密码；被删除用户的会话与凭据立即失效，重置密码后需重新登录。
+                  创建、删除账户或重置密码。删除后凭据和会话立即失效；重置密码后需要重新登录。
                 </p>
               </div>
 
@@ -582,7 +581,7 @@ function SettingsPage() {
                     <TableRow>
                       <TableHead>用户名</TableHead>
                       <TableHead>角色</TableHead>
-                      <TableHead>Provider</TableHead>
+                      <TableHead>视频源</TableHead>
                       <TableHead className="text-right" />
                     </TableRow>
                   </TableHeader>
@@ -655,8 +654,8 @@ function SettingsPage() {
       <AlertDialog open={deleteUserTarget !== null} onOpenChange={(open) => !open && setDeleteUserTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>确定删除账户 {deleteUserTarget?.username}？</AlertDialogTitle>
-            <AlertDialogDescription>其凭据与会话将立即失效。</AlertDialogDescription>
+            <AlertDialogTitle>删除账户 {deleteUserTarget?.username}？</AlertDialogTitle>
+            <AlertDialogDescription>删除后，该用户的凭据和会话会立即失效。</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>

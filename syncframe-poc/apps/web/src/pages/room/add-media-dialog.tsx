@@ -121,7 +121,7 @@ export function AddMediaDialog({ open, onOpenChange, roomId, memberToken, userTo
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="bilibili">
-                    {biliBound ? "使用本浏览器绑定的 B 站账号" : "匿名（未绑定，画质上限 480P）"}
+                    {biliBound ? "本浏览器已绑定的 B 站账号" : "匿名（未绑定，画质最高 480P）"}
                   </SelectItem>
                   {!biliBound && (
                     <SelectItem value="__hint" disabled>
@@ -132,14 +132,14 @@ export function AddMediaDialog({ open, onOpenChange, roomId, memberToken, userTo
                     .filter((x) => x.kind === "bilibili")
                     .map((p) => (
                       <SelectItem key={p.id} value={`bilibili:${p.id}`}>
-                        {p.label}（使用本浏览器 B 站凭证）
+                        {p.label}（用本浏览器 B 站凭证）
                       </SelectItem>
                     ))}
                 </SelectContent>
               </Select>
               <Input
                 className="mt-2"
-                placeholder="B 站视频：BV 号 / av 号 / 视频或番剧（ep/ss）链接"
+                placeholder="B 站链接或 BV / av 号（也支持 ep / ss 番剧链接）"
                 value={biliUrl}
                 onChange={(e) => setBiliUrl(e.target.value)}
               />
@@ -178,7 +178,7 @@ export function AddMediaDialog({ open, onOpenChange, roomId, memberToken, userTo
                       ))}
                       {!userToken && (
                         <SelectItem value="__hint" disabled>
-                          （登录后可配置更多 provider）
+                          （登录后可以配置更多视频源）
                         </SelectItem>
                       )}
                     </SelectContent>
@@ -196,19 +196,19 @@ export function AddMediaDialog({ open, onOpenChange, roomId, memberToken, userTo
               </>
             )}
 
-            <p className={`mt-3 min-h-4 text-xs ${msg.ok ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`} role="status">
+            <p className={`mt-3 min-h-4 break-words text-xs ${msg.ok ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`} role="status">
               {msg.text}
             </p>
-            <p className="mt-2 text-xs leading-6 text-muted-foreground">
-              需要添加 OpenList / B 站凭据？
+            <p className="mt-2 text-xs leading-6 break-words text-muted-foreground">
+              要添加 OpenList / B 站凭据？
               <button
                 type="button"
                 className="text-primary underline"
                 onClick={() => (location.href = "/settings.html")}
               >
-                点击打开账户设置
+                打开账户设置
               </button>
-              （也可点顶栏自己的昵称）
+              （也可以点顶栏自己的昵称）
             </p>
           </div>
         </Tabs>

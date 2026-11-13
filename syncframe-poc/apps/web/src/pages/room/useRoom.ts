@@ -169,7 +169,7 @@ export function useRoom(): Bootstrap {
 
   // ── UI 状态 ───────────────────────────────────────────
   const [status, setStatus] = useState({ text: "初始化…", warn: false });
-  const [mediaBadge, setMediaBadge] = useState<{ text: string; state: RoomUiState["mediaBadgeState"] }>({ text: "无媒体", state: "none" });
+  const [mediaBadge, setMediaBadge] = useState<{ text: string; state: RoomUiState["mediaBadgeState"] }>({ text: "暂无媒体", state: "none" });
   const [routeBadge, setRouteBadge] = useState<{ direct: boolean; reason?: string } | null>(null);
   const [gesture, setGesture] = useState(false);
   const [biliHint, setBiliHint] = useState(false);
@@ -295,7 +295,7 @@ export function useRoom(): Bootstrap {
       onClosedByServer: (code, reason) => {
         if (code === 4003) {
           clearSession(roomId);
-          setStatus({ text: `房间已被删除（${reason || "房间已被删除"}），即将返回大厅…`, warn: true });
+          setStatus({ text: `房间已被删除${reason ? `（${reason}）` : ""}，即将返回大厅…`, warn: true });
           window.setTimeout(() => location.replace("/lobby.html"), 1500);
         }
       },
@@ -315,7 +315,7 @@ export function useRoom(): Bootstrap {
       onGestureNeeded: () => setGesture(true),
       onStateApplied: (state) => {
         if (mode === "player" && state.mediaId) {
-          setMediaBadge({ text: `就绪: ${state.mediaMeta?.name ?? state.mediaId}`, state: "ok" });
+          setMediaBadge({ text: `就绪 · ${state.mediaMeta?.name ?? state.mediaId}`, state: "ok" });
         }
       },
     });
@@ -391,7 +391,7 @@ export function useRoom(): Bootstrap {
       deleteRoom: async () => {
         const token = localUserRef.current?.token;
         if (!token) {
-          setStatus({ text: "删除房间需要用创建房间的账户登录（右上角用户名处登录）", warn: true });
+          setStatus({ text: "删除房间需要用创建它的账户登录（点右上角用户名登录）", warn: true });
           return;
         }
         try {
@@ -461,9 +461,9 @@ export function useRoom(): Bootstrap {
         const link = buildLink(roomId, inviteCode);
         try {
           await navigator.clipboard.writeText(link);
-          setStatus({ text: "邀请链接已复制到剪贴板，直接发给朋友即可进房", warn: false });
+          setStatus({ text: "邀请链接已复制，直接发给朋友就能进房", warn: false });
         } catch {
-          setStatus({ text: "无法访问剪贴板，请手动复制链接", warn: true });
+          setStatus({ text: "访问不了剪贴板，请手动复制链接", warn: true });
         }
       },
       registerMedia: async (payload) => {
@@ -486,7 +486,7 @@ export function useRoom(): Bootstrap {
             setAddMsg({ text: `添加失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, ok: false });
             return false;
           }
-          setAddMsg({ text: `已添加: ${body.name}（点播放列表条目开播）`, ok: true });
+          setAddMsg({ text: `已添加：${body.name}（在播放列表点它开播）`, ok: true });
           await refreshMediaListRef.current();
           return true;
         } catch (err) {
@@ -520,7 +520,7 @@ export function useRoom(): Bootstrap {
             setAddMsg({ text: `添加视频失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, ok: false });
             return;
           }
-          setAddMsg({ text: `已注册 ${body.name}（外挂字幕 ${body.related?.length ?? 0} 个）`, ok: true });
+          setAddMsg({ text: `已注册：${body.name}（外挂字幕 ${body.related?.length ?? 0} 个）`, ok: true });
           await client.hostLoad(body.mediaId, { name: body.name ?? file.name, size: body.size ?? file.size });
           void refreshMediaListRef.current();
         } catch (err) {
@@ -536,7 +536,7 @@ export function useRoom(): Bootstrap {
         try {
           const g = await engine.fetchGrant(item.mediaId);
           const u = new URL(g.url, location.origin);
-          setStatus({ text: `字幕授权 OK：${item.name}（${u.origin}${u.pathname.slice(0, 24)}…，凭证 ${g.expiresInSec / 60} 分钟）`, warn: false });
+          setStatus({ text: `字幕授权 OK：${item.name}（${u.origin}${u.pathname.slice(0, 24)}…，${g.expiresInSec / 60} 分钟内有效）`, warn: false });
         } catch (err) {
           setStatus({ text: `字幕授权失败: ${err instanceof Error ? err.message : err}`, warn: true });
         }
@@ -582,7 +582,7 @@ export function useRoom(): Bootstrap {
     biliHint,
     clockFace: stats ? fmtTime(stats.clientTimeMs) : "00:00:00.0",
     clockSub:
-      `${role === "host" ? "你是房主（权威）" : "跟随房主"} · ` +
+      `${role === "host" ? "你是房主" : "跟随房主"} · ` +
       `${state?.paused === false ? "播放中" : "已暂停"} · ${state?.rate ?? 1}×`,
     connText: !connected
       ? "重连中…"
@@ -600,7 +600,7 @@ export function useRoom(): Bootstrap {
     viewerText: !connected
       ? "连接断开，重连中…"
       : hostAway
-        ? "房主暂时离开，房间已暂停"
+        ? "房主暂时离开，已暂停"
         : state?.paused === false
           ? `跟随房主 · 播放中 · ${state?.rate ?? 1}×`
           : "跟随房主 · 已暂停",

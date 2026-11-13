@@ -102,7 +102,7 @@ function LobbyPage() {
       setAuthPassword("");
       setAuthOpen(false);
       await refreshAuthState(next);
-      toast(`已登录 ${next.username}；点击右上角用户名可管理视频 provider（OpenList / B 站凭据）`);
+      toast(`已登录 ${next.username}，点右上角头像管理视频源（OpenList / B 站）`);
     } catch (err) {
       setAuthErr(err instanceof Error ? err.message : String(err));
     } finally {
@@ -150,7 +150,7 @@ function LobbyPage() {
         toast(`删除失败：${body.error ?? `HTTP ${res.status}`}`);
         return;
       }
-      toast(`房间「${deleteTarget.roomId}」已删除`);
+      toast(`房间「${deleteTarget.roomId}」已移除`);
       await refreshRoomList();
     } catch (err) {
       toast(`删除失败：${err instanceof Error ? err.message : err}`);
@@ -295,12 +295,12 @@ function LobbyPage() {
           <Badge variant="outline" className="mb-4 rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-widest">
             SyncFrame
           </Badge>
-          <h1 className="mb-3 text-3xl font-bold tracking-tight sm:text-4xl">和朋友，同频看同一部影片</h1>
+          <h1 className="mb-3 text-3xl font-bold tracking-tight sm:text-4xl">和朋友，同步看每一帧</h1>
           <p className="mx-auto max-w-[40ch] text-sm leading-7 text-muted-foreground">
-            创建一个房间，把链接发给朋友；点开即进房，播放、暂停、进度完全同步。
+            开一个房间，把链接丢给朋友。点开就进房，播放、暂停、进度全程同步。
           </p>
           {params.get("expired") && (
-            <p className="mt-4 text-sm text-amber-600 dark:text-amber-400">成员凭证已过期，请重新加入房间</p>
+            <p className="mt-4 text-sm text-amber-600 dark:text-amber-400">房间会话已过期，请重新加入</p>
           )}
         </div>
 
@@ -319,22 +319,22 @@ function LobbyPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Video className="size-4 text-muted-foreground" />
-              同步房间
+              进行中的房间
               <span className="ml-auto text-xs font-normal text-muted-foreground">
-                {rooms !== null && rooms.length > 0 ? `共 ${rooms.length} 个` : ""}
+                {rooms !== null && rooms.length > 0 ? `${rooms.length} 个房间` : ""}
               </span>
             </CardTitle>
-            <CardDescription>本实例当前活跃的同步房间；点右侧「直接加入」，输入邀请码即可进房。</CardDescription>
+            <CardDescription>正在同步观影的房间。点「直接加入」，输入访问码就能进。</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="overflow-hidden rounded-lg border">
               {rooms === null ? (
                 <div className="py-5 text-center text-sm text-muted-foreground">加载中…</div>
               ) : roomsError ? (
-                <div className="py-5 text-center text-sm text-muted-foreground">（房间列表加载失败）</div>
+                <div className="py-5 text-center text-sm text-muted-foreground">房间列表加载失败，请稍后重试</div>
               ) : rooms.length === 0 ? (
                 <div className="py-5 text-center text-sm text-muted-foreground">
-                  （当前没有房间，创建一个吧；房间只有被删除后才会消失）
+                  还没有房间，来开第一个吧。房间只会在被删除后消失。
                 </div>
               ) : (
                 rooms.map((r) => (
@@ -375,10 +375,10 @@ function LobbyPage() {
           </CardContent>
         </Card>
 
-        <p className="mt-10 border-t pt-6 text-center text-xs leading-7 text-muted-foreground">
-          进入房间后房主可点「添加影片」加入直链、B 站链接或 OpenList 媒体库视频；播放、暂停、进度、倍速由房主统一控制。
+        <p className="mt-10 break-words border-t pt-6 text-center text-xs leading-7 text-muted-foreground">
+          进房后，房主点「添加影片」加入直链、B 站或 OpenList 片源，播放、暂停、进度、倍速全员同步。
           <br />
-          房间成员令牌存于会话存储，过期后自动回到本页重新加入。
+          房间会话保存在浏览器中，过期后回到本页重新加入即可。
         </p>
       </main>
 
@@ -386,9 +386,9 @@ function LobbyPage() {
       <Dialog open={authOpen} onOpenChange={setAuthOpen}>
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">登录账户</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">登录</DialogTitle>
             <DialogDescription>
-              没有账户？请联系管理员创建；游客无需账户，凭邀请链接即可进房观看。
+              没有账户？联系管理员开通。游客无需账户，点邀请链接就能进房观看。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -438,11 +438,11 @@ function LobbyPage() {
                 需登录
               </Badge>
             </DialogTitle>
-            <DialogDescription>成为房主：添加直链 / B 站 / OpenList 影片，统一控制播放、暂停、进度与倍速。</DialogDescription>
+            <DialogDescription>当房主：添加直链、B 站或 OpenList 影片，播放节奏由你掌控。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="create-name">房间名（必填，会展示在房间列表）</Label>
+              <Label htmlFor="create-name">房间名（必填，会显示在房间列表）</Label>
               <Input
                 id="create-name"
                 maxLength={24}
@@ -467,7 +467,7 @@ function LobbyPage() {
             </div>
             <label className="flex cursor-pointer items-center gap-2 text-sm select-none">
               <Checkbox checked={createHasInvite} onCheckedChange={(v) => setCreateHasInvite(v === true)} />
-              生成访问码 <span className="text-muted-foreground">（访问码只约束游客；登录用户凭房间号即可加入）</span>
+              生成访问码 <span className="text-muted-foreground">（只限制游客；登录用户凭房间号就能加入）</span>
             </label>
             {createHasInvite && (
               <div className="space-y-2">
@@ -501,7 +501,7 @@ function LobbyPage() {
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <DialogTitle>加入房间</DialogTitle>
-            <DialogDescription>通常直接点开房主分享的链接即可自动进房；这里手动输入房间号与邀请码。</DialogDescription>
+            <DialogDescription>一般点房主发的链接就能直接进房，这里也可以手动输入房间号和访问码。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -517,7 +517,7 @@ function LobbyPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="join-code">
-                访问码 <span className="font-normal text-muted-foreground">（仅游客必填；登录用户凭房间号即可加入）</span>
+                访问码 <span className="font-normal text-muted-foreground">（游客必填，登录用户可留空）</span>
               </Label>
               <Input
                 id="join-code"
@@ -533,7 +533,7 @@ function LobbyPage() {
               <Input
                 id="join-name"
                 maxLength={24}
-                placeholder={user ? `${user.username}（留空即用登录名）` : "例如：小红"}
+                placeholder={user ? `${user.username}（留空用登录名）` : "例如：小红"}
                 autoComplete="nickname"
                 value={joinName}
                 onChange={(e) => setJoinName(e.target.value)}
@@ -559,7 +559,7 @@ function LobbyPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>删除房间「{deleteTarget?.roomId}」？</AlertDialogTitle>
-            <AlertDialogDescription>删除后不可恢复，房间内的成员将被请出。</AlertDialogDescription>
+            <AlertDialogDescription>删除后无法恢复，房间内所有成员都会被请出。</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deleteBusy}>取消</AlertDialogCancel>

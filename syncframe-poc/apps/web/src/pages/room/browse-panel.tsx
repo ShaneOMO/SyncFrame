@@ -77,7 +77,7 @@ export function BrowsePanel({ roomId, getToken, getUserToken, providerId, onProv
   }, [getToken, getUserToken]);
 
   const loadDir = useCallback(async (dir: string, p: number): Promise<void> => {
-    onStatus(`正在浏览 ${dir} …`);
+    onStatus(`正在打开 ${dir}…`);
     try {
       const qp = new URLSearchParams({ room: roomId, provider: providerId, path: dir, page: String(p) });
       const data = await authedGet(`/api/browse?${qp}`);
@@ -208,7 +208,7 @@ export function BrowsePanel({ roomId, getToken, getUserToken, providerId, onProv
       </div>
       <div className="mt-2 max-h-[300px] overflow-y-auto rounded-lg border bg-background">
         {items.length === 0 ? (
-          <div className="py-5 text-center text-sm text-muted-foreground">（空）</div>
+          <div className="py-5 text-center text-sm text-muted-foreground">这个目录是空的</div>
         ) : (
           items.map((item) => {
             const isVideo = !item.isDir && VIDEO_EXTS.has(extOf(item.name));

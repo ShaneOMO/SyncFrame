@@ -63,7 +63,7 @@ function MediaList({
     <div className="overflow-hidden rounded-lg border">
       {items.length === 0 ? (
         <div className="py-5 text-center text-sm text-muted-foreground">
-          {isHost ? "（播放列表为空，点右上角「＋ 添加影片」）" : "（等待房主添加视频）"}
+          {isHost ? "（播放列表是空的，点右上角「＋ 添加影片」）" : "（等房主添加视频）"}
         </div>
       ) : (
         items.map((item) => {
@@ -245,7 +245,7 @@ function RoomPage() {
             {ui.routeBadge.direct ? "直连" : "代理"}
           </Badge>
         )}
-        <Badge variant={mediaBadgeVariant(ui.mediaBadgeState)} className="rounded-full text-xs">
+        <Badge variant={mediaBadgeVariant(ui.mediaBadgeState)} className="max-w-[45ch] truncate rounded-full text-xs">
           {ui.mediaBadgeText}
         </Badge>
         {/* 成员 chips */}
@@ -258,7 +258,7 @@ function RoomPage() {
                 "gap-1 rounded-full text-xs " +
                 (m.id === room.clientId ? "cursor-pointer border-border-strong" : "")
               }
-              title={m.id === room.clientId ? "账户设置（provider 管理）" : undefined}
+              title={m.id === room.clientId ? "账户设置（视频源管理）" : undefined}
               onClick={m.id === room.clientId ? () => (location.href = "/settings.html") : undefined}
             >
               {m.role === "host" && <Crown className="size-3 text-amber-500" />}
@@ -331,7 +331,7 @@ function RoomPage() {
             )}
             <p
               className={
-                "min-h-5 px-1 pt-2 text-xs " +
+                "min-h-5 break-words px-1 pt-2 text-xs " +
                 (ui.statusWarn ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")
               }
               role="status"
@@ -345,13 +345,13 @@ function RoomPage() {
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm">
-                在线人数 <span className="text-xs font-normal text-muted-foreground">房主 + 观众</span>
+                在线成员 <span className="text-xs font-normal text-muted-foreground">房主 + 观众</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="flex gap-1.5">
                 {[
-                  { label: "同步用户", value: ui.statTotal },
+                  { label: "合计", value: ui.statTotal },
                   { label: "房主", value: ui.statHost },
                   { label: "观众", value: ui.statGuest },
                 ].map((s) => (
@@ -371,7 +371,7 @@ function RoomPage() {
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-sm">
                 播放列表
-                <span className="text-xs font-normal text-muted-foreground">点击播放（房主）</span>
+                <span className="text-xs font-normal text-muted-foreground">点条目开播（房主）</span>
                 {isHost && room.isPlayer && (
                   <Button size="sm" className="ml-auto h-7" onClick={() => setAddOpen(true)}>
                     ＋ 添加影片
@@ -396,16 +396,16 @@ function RoomPage() {
       <Dialog open={ui.biliHint} onOpenChange={(open) => !open && actions.closeBiliHint()}>
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
-            <DialogTitle>未绑定 B 站账号，播放将受限制</DialogTitle>
-            <DialogDescription>
-              当前以匿名身份解析 B 站视频：画质上限 720P，番剧与会员内容可能无法播放。绑定后凭证只保存在本浏览器，服务器不会保存，也不会共享给其他人。
+            <DialogTitle>还没绑定 B 站账号</DialogTitle>
+            <DialogDescription className="break-words">
+              现在以匿名身份解析 B 站视频：画质最高 720P，番剧和会员内容可能播不了。绑定后凭证只存在本浏览器，服务器不保存，也不会共享给他人。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={actions.closeBiliHint}>
-              继续观看（受限）
+              先这么看
             </Button>
-            <Button onClick={() => (location.href = "/settings.html")}>去绑定 B 站账号</Button>
+            <Button onClick={() => (location.href = "/settings.html")}>去绑定</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -415,7 +415,7 @@ function RoomPage() {
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <DialogTitle>修改房间名</DialogTitle>
-            <DialogDescription>房间名仅用于展示；房间号与访问码不受影响。</DialogDescription>
+            <DialogDescription>只是换个显示名，房间号和访问码不受影响。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -455,8 +455,8 @@ function RoomPage() {
       <AlertDialog open={deleteRoomOpen} onOpenChange={setDeleteRoomOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>确认删除房间「{room.roomId}」？</AlertDialogTitle>
-            <AlertDialogDescription>删除后不可恢复，房间内的所有成员将被请出。</AlertDialogDescription>
+            <AlertDialogTitle>删除房间「{room.roomId}」？</AlertDialogTitle>
+            <AlertDialogDescription>删除后无法恢复，房间内所有成员都会被请出。</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
