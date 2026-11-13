@@ -16,7 +16,10 @@ COPY syncframe-poc/package.json syncframe-poc/package-lock.json syncframe-poc/ts
 COPY syncframe-poc/packages ./packages
 COPY syncframe-poc/apps/web ./apps/web
 
-RUN npm ci --no-audit --no-fund && npm run build -w @syncframe/web
+# npm 网络偶发 ECONNRESET（部署服务器到 registry 链路不稳）：加重试参数 + 整体重试 3 次
+RUN npm config set fetch-retries 5 fetch-retry-mintimeout 20000 fetch-retry-maxtimeout 120000 \
+    && for i in 1 2 3; do npm ci --no-audit --no-fund && break || { [ "$i" = 3 ] && exit 1; sleep 15; }; done \
+    && npm run build -w @syncframe/web
 
 # ---------- 阶段 2：安装 server 生产依赖（含 tsx 运行时） ----------
 FROM node:22-alpine AS deps
@@ -28,7 +31,8 @@ COPY syncframe-poc/apps/server ./apps/server
 
 # 只装 server workspace 的生产依赖（含 openlist-adapter / sync-protocol），
 # 不含 vite / typescript / playwright 等 devDependencies，也不装 web 的依赖
-RUN npm ci --no-audit --no-fund --omit=dev -w @syncframe/server \
+RUN npm config set fetch-retries 5 fetch-retry-mintimeout 20000 fetch-retry-maxtimeout 120000 \
+    && for i in 1 2 3; do npm ci --no-audit --no-fund --omit=dev -w @syncframe/server && break || { [ "$i" = 3 ] && exit 1; sleep 15; }; done \
     && npm cache clean --force
 
 # ---------- 阶段 3：运行时（无 npm，仅 nodejs） ----------
