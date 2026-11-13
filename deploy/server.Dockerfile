@@ -17,8 +17,15 @@ COPY syncframe-poc/packages ./packages
 COPY syncframe-poc/apps/web ./apps/web
 
 # npm 网络偶发 ECONNRESET（部署服务器到 registry 链路不稳）：加重试参数 + 整体重试 3 次
+# 另：lockfile 在 Windows 上生成，npm ci 在 alpine 下会漏装 musl 原生绑定（npm/cli#4828），
+# 显式按已装版本补齐 lightningcss / tailwind oxide 的 musl 绑定并验证可加载。
 RUN npm config set fetch-retries 5 fetch-retry-mintimeout 20000 fetch-retry-maxtimeout 120000 \
     && for i in 1 2 3; do npm ci --no-audit --no-fund && break || { [ "$i" = 3 ] && exit 1; sleep 15; }; done \
+    && for pkg in lightningcss @tailwindcss/oxide; do \
+         ver=$(node -p "require('$pkg/package.json').version"); \
+         npm i --no-save --no-audit --no-fund "$pkg-linux-x64-musl@$ver" || exit 1; \
+       done \
+    && node -e "require('lightningcss'); require('@tailwindcss/oxide')" \
     && npm run build -w @syncframe/web
 
 # ---------- 阶段 2：安装 server 生产依赖（含 tsx 运行时） ----------
