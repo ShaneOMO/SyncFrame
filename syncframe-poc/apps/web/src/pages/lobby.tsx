@@ -24,6 +24,7 @@ import { saveSession } from "@/session.ts";
 
 interface RoomSummary {
   roomId: string;
+  roomName: string;
   hostName: string;
   createdAt: number;
   memberCount: number;
@@ -344,7 +345,10 @@ function LobbyPage() {
                     <span className="max-w-[200px] truncate rounded-md bg-primary/10 px-2 py-1 font-mono text-sm font-semibold text-primary">
                       {r.roomId}
                     </span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium">{r.hostName}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium">
+                      {r.roomName}
+                      <span className="ml-1 font-normal text-muted-foreground">· {r.hostName}</span>
+                    </span>
                     <span className="whitespace-nowrap text-xs text-muted-foreground">
                       {r.memberCount} 人在线 · {r.mediaCount} 个视频 · {r.hasInvite ? "凭访问码加入" : "无需访问码"}
                     </span>
@@ -463,7 +467,7 @@ function LobbyPage() {
             </div>
             <label className="flex cursor-pointer items-center gap-2 text-sm select-none">
               <Checkbox checked={createHasInvite} onCheckedChange={(v) => setCreateHasInvite(v === true)} />
-              生成访问码 <span className="text-muted-foreground">（取消勾选则任何人凭房间号即可加入）</span>
+              生成访问码 <span className="text-muted-foreground">（访问码只约束游客；登录用户凭房间号即可加入）</span>
             </label>
             {createHasInvite && (
               <div className="space-y-2">
@@ -513,7 +517,7 @@ function LobbyPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="join-code">
-                访问码 <span className="font-normal text-muted-foreground">（未设置访问码的房间可留空）</span>
+                访问码 <span className="font-normal text-muted-foreground">（仅游客必填；登录用户凭房间号即可加入）</span>
               </Label>
               <Input
                 id="join-code"

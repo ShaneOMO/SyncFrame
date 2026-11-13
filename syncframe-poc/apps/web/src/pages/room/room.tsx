@@ -4,7 +4,7 @@
  */
 
 import { useState } from "react";
-import { Crown, LogOut, Play, Trash2, Users } from "lucide-react";
+import { Crown, LogOut, Pencil, Play, Trash2, Users } from "lucide-react";
 import { AppHeader, LogoMark } from "@/components/app-header";
 import { ToastProvider } from "@/components/toaster";
 import { Button } from "@/components/ui/button";
@@ -159,6 +159,9 @@ function RoomPage() {
   const [inviteOpen, setInviteOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [deleteRoomOpen, setDeleteRoomOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameName, setRenameName] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
   const [addMsg, setAddMsg] = useState({ text: "", ok: false });
 
   if (room.phase === "loading") {
@@ -195,6 +198,20 @@ function RoomPage() {
       {/* 房间徽标行（顶栏下方） */}
       <div className="mx-auto mt-4 flex max-w-7xl flex-wrap items-center gap-2 px-4">
         <span className="text-sm font-semibold">{room.roomLabel}</span>
+        {isHost && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-muted-foreground"
+            title="修改房间名"
+            onClick={() => {
+              setRenameName(room.roomLabel);
+              setRenameOpen(true);
+            }}
+          >
+            <Pencil className="size-3" />
+          </Button>
+        )}
         <Badge variant="outline" className="rounded-full font-mono text-xs">
           {room.roomId}
           {room.mode === "clock" ? " · clock" : ""}
@@ -328,7 +345,7 @@ function RoomPage() {
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm">
-                在线人数 <span className="text-xs font-normal text-muted-foreground">房主 + 游客</span>
+                在线人数 <span className="text-xs font-normal text-muted-foreground">房主 + 观众</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -336,7 +353,7 @@ function RoomPage() {
                 {[
                   { label: "同步用户", value: ui.statTotal },
                   { label: "房主", value: ui.statHost },
-                  { label: "游客", value: ui.statGuest },
+                  { label: "观众", value: ui.statGuest },
                 ].map((s) => (
                   <div
                     key={s.label}
@@ -390,6 +407,47 @@ function RoomPage() {
             </Button>
             <Button onClick={() => (location.href = "/settings.html")}>去绑定 B 站账号</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 修改房间名（仅房主） */}
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>修改房间名</DialogTitle>
+            <DialogDescription>房间名仅用于展示；房间号与访问码不受影响。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="rename-name">房间名</Label>
+              <Input
+                id="rename-name"
+                maxLength={24}
+                autoComplete="off"
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !renameBusy) {
+                    setRenameBusy(true);
+                    void actions.renameRoom(renameName).finally(() => setRenameBusy(false));
+                  }
+                }}
+              />
+            </div>
+            <Button
+              className="w-full"
+              disabled={renameBusy || !renameName.trim()}
+              onClick={() => {
+                setRenameBusy(true);
+                void actions
+                  .renameRoom(renameName)
+                  .then((ok) => ok && setRenameOpen(false))
+                  .finally(() => setRenameBusy(false));
+              }}
+            >
+              保存
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 

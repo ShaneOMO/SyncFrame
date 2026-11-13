@@ -24,8 +24,9 @@
  *  - GET  /api/rooms                                   公开房间列表（大厅；带 userToken 时标记可删除的房间）
  *  - POST /api/rooms            (Bearer userToken) {name, roomId?, inviteCode?, noInvite?} → {roomId, inviteCode|null, memberToken, ...}
  *                                                    （游客 401；noInvite=true 则不生成访问码，凭房间号即可加入）
- *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}（公开；未设访问码的房间可省略 inviteCode；
- *                                                    可选 Bearer userToken：登录用户未填昵称时用其用户名）
+ *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}（公开；访问码只约束游客，
+ *                                                    可选 Bearer userToken：登录用户凭房间号即可进房、昵称缺省用用户名）
+ *  - POST /api/rooms/:id/rename {name}（Bearer memberToken，仅房主）修改房间名（纯展示）
  *  - DELETE /api/rooms/:id      (Bearer userToken)   删除房间（仅房主本人或管理员）；房间只有被删除才会消失
  *  - GET  /api/browse?provider=&path=&page=           列目录（仅房主本人账户 + X-User-Token）
  *  - GET  /api/search?provider=&keywords=&parent=&page= 搜索（同上）
@@ -476,7 +477,8 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, body:
   }
   let created: ReturnType<typeof registry.createRoom>;
   try {
-    created = registry.createRoom(name, hostUser, clientId, { roomId: roomIdOpt, inviteCode: inviteOpt, noInvite });
+    // hostName = 创建者用户名（房主显示名）；name = 房间名（展示用，与房主解耦）。
+    created = registry.createRoom(hostUser, hostUser, clientId, { roomId: roomIdOpt, inviteCode: inviteOpt, noInvite, roomName: name });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     sendJson(res, message.includes("已被占用") ? 409 : 400, { error: message });
@@ -485,8 +487,8 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, body:
   const { room, member, hostSecret } = created;
   sendJson(res, 200, {
     roomId: room.roomId,
-    // 房间页徽标展示用（创建时的房间名）。
-    roomName: room.hostName,
+    // 房间页徽标展示用。
+    roomName: room.roomName,
     // 未生成访问码的房间返回 null，客户端不展示邀请链接。
     inviteCode: room.inviteCode,
     hostSecret,
@@ -509,7 +511,8 @@ async function handleJoinRoom(
   if (username && (!name || /^guest/i.test(name))) name = username;
   const inviteCode = typeof parsed.inviteCode === "string" ? parsed.inviteCode : undefined;
   const hostSecret = typeof parsed.hostSecret === "string" ? parsed.hostSecret : undefined;
-  const member = registry.joinRoom(roomId, name, { inviteCode, hostSecret });
+  // 登录用户凭账户身份进房（访问码只约束游客）；房主重建会话凭 hostSecret。
+  const member = registry.joinRoom(roomId, name, { inviteCode, hostSecret, ...(username ? { asUser: username } : {}) });
   if (!member) {
     // 房间不存在与邀请码错误都返回 401，不暴露房间存在性。
     sendJson(res, 401, { error: "房间不存在或邀请码错误" });
@@ -521,9 +524,25 @@ async function handleJoinRoom(
     role: member.role,
     expiresAt: member.expiresAt,
     name: member.name,
-    // 房间页徽标展示用（创建时的房间名）。
-    roomName: registry.peek(roomId)?.hostName ?? "",
+    // 房间页徽标展示用。
+    roomName: registry.peek(roomId)?.roomName ?? "",
   });
+}
+
+/** 修改房间名（仅房主；纯展示字段）。 */
+async function handleRenameRoom(req: IncomingMessage, res: ServerResponse, roomId: string, body: string): Promise<void> {
+  const member = requireMember(req, res, roomId, { hostOnly: true });
+  if (!member) return;
+  const parsed = readJsonBody(body);
+  const name = typeof parsed.name === "string" ? parsed.name : "";
+  const result = registry.renameRoom(roomId, member, name);
+  if (!result.ok) {
+    if (result.reason === "no-room") sendJson(res, 404, { error: "房间不存在" });
+    else if (result.reason === "bad-name") sendJson(res, 400, { error: "房间名不能为空" });
+    else sendJson(res, 403, { error: "只有房主可以修改房间名" });
+    return;
+  }
+  sendJson(res, 200, { roomName: registry.peek(roomId)?.roomName ?? "" });
 }
 
 /** 邀请码轮换（仅房主）：旧邀请码立即失效。 */
@@ -1312,6 +1331,8 @@ const server = createServer(async (req, res) => {
       await handleDeleteRoom(req, res, url.pathname.split("/")[3]);
     } else if (url.pathname.startsWith("/api/rooms/") && req.method === "POST" && url.pathname.endsWith("/invite/rotate")) {
       await handleRotateInvite(req, res, url.pathname.split("/")[3]);
+    } else if (url.pathname.startsWith("/api/rooms/") && req.method === "POST" && url.pathname.endsWith("/rename")) {
+      await handleRenameRoom(req, res, url.pathname.split("/")[3], await readBody(req));
     } else if (url.pathname === "/api/browse" && req.method === "GET") {
       await handleBrowse(req, res, url, url.searchParams.get("room"));
     } else if (url.pathname === "/api/search" && req.method === "GET") {

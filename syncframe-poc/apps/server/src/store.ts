@@ -31,6 +31,8 @@ export interface StoredUser {
 /** 房间记录（与 room-auth.ts 的落盘形态一致，media/members 为 entries 数组）。 */
 export interface StoredRoom {
   roomId: string;
+  /** 房间名（旧数据无此列，加载时回落为 hostName）。 */
+  roomName?: string | null;
   inviteCode: string | null;
   hostSecret: string;
   createdAt: number;
@@ -76,6 +78,11 @@ export class Store {
       );
     `);
     chmodSync(file, 0o600);
+    // 旧库补列：room_name（房间名与房主名解耦前创建的库没有这一列）。
+    const cols = this.db.prepare("PRAGMA table_info(rooms)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "room_name")) {
+      this.db.exec("ALTER TABLE rooms ADD COLUMN room_name TEXT");
+    }
     if (fresh) this.migrateFromJson(dataDir);
   }
 
@@ -151,6 +158,7 @@ export class Store {
         const r = row as Record<string, unknown>;
         return {
           roomId: r.room_id as string,
+          roomName: (r.room_name as string | null) ?? null,
           inviteCode: (r.invite_code as string | null) ?? null,
           hostSecret: r.host_secret as string,
           createdAt: r.created_at as number,
@@ -168,10 +176,11 @@ export class Store {
     if (!this.db) return;
     this.db
       .prepare(
-        `INSERT INTO rooms (room_id, invite_code, host_secret, created_at, last_active_at,
+        `INSERT INTO rooms (room_id, room_name, invite_code, host_secret, created_at, last_active_at,
            host_client_id, host_name, host_user, media, members)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(room_id) DO UPDATE SET invite_code=excluded.invite_code,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(room_id) DO UPDATE SET room_name=excluded.room_name,
+           invite_code=excluded.invite_code,
            host_secret=excluded.host_secret, created_at=excluded.created_at,
            last_active_at=excluded.last_active_at, host_client_id=excluded.host_client_id,
            host_name=excluded.host_name, host_user=excluded.host_user,
@@ -179,6 +188,7 @@ export class Store {
       )
       .run(
         r.roomId,
+        r.roomName ?? null,
         r.inviteCode,
         r.hostSecret,
         r.createdAt,

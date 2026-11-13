@@ -70,6 +70,7 @@ export interface RoomUiState {
 export interface RoomActions {
   joinPlay(): void;
   deleteRoom(): Promise<void>;
+  renameRoom(newName: string): Promise<boolean>;
   rotateInvite(): Promise<void>;
   copyInvite(): Promise<void>;
   registerMedia(payload: Record<string, unknown>): Promise<boolean>;
@@ -409,6 +410,30 @@ export function useRoom(): Bootstrap {
           location.replace("/lobby.html");
         } catch (err) {
           setStatus({ text: `删除失败：${err instanceof Error ? err.message : err}`, warn: true });
+        }
+      },
+      renameRoom: async (newName) => {
+        const sess = sessionRef.current;
+        if (!sess) return false;
+        try {
+          const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/rename`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${sess.memberToken}` },
+            body: JSON.stringify({ name: newName }),
+          });
+          const body = (await res.json().catch(() => ({}))) as { roomName?: string; error?: string };
+          if (!res.ok || !body.roomName) {
+            setStatus({ text: `修改房间名失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, warn: true });
+            return false;
+          }
+          const next = { ...sess, roomName: body.roomName };
+          saveSession(next);
+          setSession(next);
+          setStatus({ text: `房间名已改为「${body.roomName}」`, warn: false });
+          return true;
+        } catch (err) {
+          setStatus({ text: `修改房间名失败: ${err instanceof Error ? err.message : err}`, warn: true });
+          return false;
         }
       },
       rotateInvite: async () => {
