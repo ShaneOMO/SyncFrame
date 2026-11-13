@@ -7,6 +7,11 @@ const backend = `http://localhost:${process.env.SYNC_BACKEND_PORT ?? 8787}`;
 
 export default defineConfig({
   plugins: [tailwindcss()],
+  resolve: {
+    alias: {
+      "@": resolve(__dirname, "src"),
+    },
+  },
   server: {
     port: 5173,
     proxy: {
