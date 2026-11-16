@@ -29,6 +29,7 @@ const GRANT_CACHE_MS = 60_000;
 export const GRANT_TTL_SEC = 600;
 /** 房间邀请码：8 位大写字母数字（去掉易混淆字符）。M2：6→8 位，配合限流使爆破可忽略。 */
 const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const ROOM_ID_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
 /** 外挂字幕扩展名：与视频一同自动注册，走同一 grant 授权路径（P3 任务 8）。 */
 const SUBTITLE_EXTS = new Set([".srt", ".ass", ".ssa", ".vtt"]);
 
@@ -105,27 +106,16 @@ export interface GrantResult {
   size: number;
   expiresInSec: number;
   cached: boolean;
-  /** B 站独立音轨地址（直连或反代）。 */
-  audioUrl?: string;
-  /** 直连不可用时前端回落的地址。 */
-  fallbackUrl?: string;
-  fallbackAudioUrl?: string;
-  /** true = 浏览器直连（服务器不耗带宽）。 */
-  direct?: boolean;
-  /** true = 本次按匿名解析（未带凭证），画质受 B 站匿名上限限制。 */
-  anonymous?: boolean;
+  /** B 站仅返回同步标识，播放地址由本机助手解析。 */
+  bilibili?: MediaEntry["bilibili"];
 }
 
-/** resolve 回调返回的媒体地址集合（B 站需要音轨与回落地址）。 */
+/** resolve 回调返回的媒体地址；B 站仅包含同步标识，不包含播放地址。 */
 interface ResolvedMedia {
   url: string;
   name: string;
   size: number;
-  audioUrl?: string;
-  fallbackUrl?: string;
-  fallbackAudioUrl?: string;
-  direct?: boolean;
-  anonymous?: boolean;
+  bilibili?: MediaEntry["bilibili"];
 }
 
 interface GrantCacheEntry extends ResolvedMedia {
@@ -155,6 +145,13 @@ function makeInviteCode(): string {
   let code = "";
   for (let i = 0; i < 8; i++) code += INVITE_ALPHABET[bytes[i] % INVITE_ALPHABET.length];
   return code;
+}
+
+function makeRoomId(): string {
+  const bytes = randomBytes(10);
+  let id = "";
+  for (let i = 0; i < 10; i++) id += ROOM_ID_ALPHABET[bytes[i] % ROOM_ID_ALPHABET.length];
+  return `r_${id}`;
 }
 
 function makeMediaId(): string {
@@ -284,8 +281,8 @@ export class RoomRegistry {
     const username = hostUser.trim();
     const roomName = (opts.roomName ?? "").trim().slice(0, 24);
     if (!username || !roomName) throw new Error("房间名不能为空");
-    let roomId = randomUUID();
-    while (this.rooms.has(roomId)) roomId = randomUUID();
+    let roomId = makeRoomId();
+    while (this.rooms.has(roomId)) roomId = makeRoomId();
     let inviteCode: string | null;
     if (opts.inviteCode !== undefined) {
       inviteCode = opts.inviteCode.toUpperCase();
@@ -376,7 +373,7 @@ export class RoomRegistry {
     return { ok: true, inviteCode: room.inviteCode };
   }
 
-  /** 修改房间名（仅房主；不影响内部 GUID 和邀请码）。 */
+  /** 修改房间名（仅房主；不影响内部短 ID 和邀请码）。 */
   renameRoom(
     roomId: string,
     member: MemberRecord,
@@ -598,7 +595,7 @@ export class RoomRegistry {
     mediaId: string,
     member: MemberRecord,
     resolve: (entry: MediaEntry) => Promise<ResolvedMedia>,
-    /** 缓存变体（如 B 站凭证指纹）：同一成员切换凭证后不复用旧结果。 */
+    /** 可选缓存变体：调用方需要按解析上下文隔离结果时使用。 */
     variant = "",
   ): Promise<GrantResult | null> {
     const room = this.rooms.get(roomId);

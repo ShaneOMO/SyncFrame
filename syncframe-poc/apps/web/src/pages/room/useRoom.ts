@@ -7,7 +7,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { SyncClient } from "@syncframe/sync-protocol";
 import { loadSession, clearSession, saveSession, loadInviteCode } from "@/session.ts";
 import type { RoomSession } from "@/session.ts";
-import { biliCredentialHeaders } from "@/bili-credential.ts";
 import { loadUser } from "@/lib/user.ts";
 import { AccountExpiredError, joinRoom, restoreRoomSession, verifyAccount } from "@/lib/room-membership";
 import {
@@ -474,7 +473,6 @@ export function useRoom(): Bootstrap {
               "Content-Type": "application/json",
               ...{ Authorization: `Bearer ${sess.memberToken}` },
               ...(localUserRef.current ? { "X-User-Token": localUserRef.current.token } : {}),
-              ...biliCredentialHeaders(),
             },
             body: JSON.stringify(payload),
           });

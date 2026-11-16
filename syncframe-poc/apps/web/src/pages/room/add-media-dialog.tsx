@@ -3,7 +3,7 @@
  * 行为对齐旧 room.html 的 addMediaModal。
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BrowsePanel } from "@/pages/room/browse-panel.tsx";
-import { loadBiliSessdata } from "@/bili-credential.ts";
+import { getLocalBiliStatus, resolveLocalBiliVideo, type LocalBiliStatus } from "@/bili-local.ts";
 import type { PublicProvider, RoomActions } from "@/pages/room/useRoom.ts";
 
 interface Props {
@@ -45,9 +45,17 @@ export function AddMediaDialog({ open, onOpenChange, roomId, memberToken, userTo
   const [pathProvider, setPathProvider] = useState("");
   const [pathValue, setPathValue] = useState("");
   const [browseProvider, setBrowseProvider] = useState("");
+  const [biliStatus, setBiliStatus] = useState<LocalBiliStatus>({ available: false, authenticated: false, uname: "" });
+  const [biliSubmitting, setBiliSubmitting] = useState(false);
 
   const openlist = useMemo(() => providers.filter((p) => p.kind === "openlist"), [providers]);
-  const biliBound = loadBiliSessdata() !== null;
+
+  useEffect(() => {
+    if (!open) return;
+    void getLocalBiliStatus().then(setBiliStatus).catch(() => {
+      setBiliStatus({ available: false, authenticated: false, uname: "" });
+    });
+  }, [open]);
 
   const submitDirect = async (): Promise<void> => {
     if (!directUrl.trim()) return;
@@ -56,9 +64,18 @@ export function AddMediaDialog({ open, onOpenChange, roomId, memberToken, userTo
   };
 
   const submitBili = async (): Promise<void> => {
-    if (!biliUrl.trim()) return;
-    const ok = await actions.registerMedia({ provider: "bilibili", url: biliUrl.trim() });
-    if (ok) setBiliUrl("");
+    if (!biliUrl.trim() || biliSubmitting) return;
+    setBiliSubmitting(true);
+    onStatus("正在通过本机助手解析 B 站视频…");
+    try {
+      const info = await resolveLocalBiliVideo(biliUrl.trim());
+      const ok = await actions.registerMedia({ provider: "bilibili", name: info.name, bilibili: info.bilibili });
+      if (ok) setBiliUrl("");
+    } catch (err) {
+      onStatus(`B 站视频添加失败：${err instanceof Error ? err.message : err}`, true);
+    } finally {
+      setBiliSubmitting(false);
+    }
   };
 
   const submitPath = async (): Promise<void> => {
@@ -115,36 +132,21 @@ export function AddMediaDialog({ open, onOpenChange, roomId, memberToken, userTo
             </TabsContent>
 
             <TabsContent value="bili">
-              <Select defaultValue="bilibili">
-                <SelectTrigger aria-label="B 站来源">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="bilibili">
-                    {biliBound ? "本浏览器已绑定的 B 站账号" : "匿名（未绑定，画质最高 480P）"}
-                  </SelectItem>
-                  {!biliBound && (
-                    <SelectItem value="__hint" disabled>
-                      （扫码绑定后画质更高：账户设置 → 哔哩哔哩）
-                    </SelectItem>
-                  )}
-                  {providers
-                    .filter((x) => x.kind === "bilibili")
-                    .map((p) => (
-                      <SelectItem key={p.id} value={`bilibili:${p.id}`}>
-                        {p.label}（用本浏览器 B 站凭证）
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
+              <p className="text-xs leading-6 text-muted-foreground">
+                {biliStatus.authenticated
+                  ? `本机已登录${biliStatus.uname ? `：${biliStatus.uname}` : ""}，按账号权限解析画质。`
+                  : biliStatus.available
+                    ? "本机助手已运行，但尚未登录 B 站；请先到账户设置扫码。"
+                    : "未连接本机助手，请运行 npm run p1:local；B 站不支持匿名播放。"}
+              </p>
               <Input
                 className="mt-2"
                 placeholder="B 站链接或 BV / av 号（也支持 ep / ss 番剧链接）"
                 value={biliUrl}
                 onChange={(e) => setBiliUrl(e.target.value)}
               />
-              <Button className="mt-3 w-full" onClick={() => void submitBili()}>
-                添加到播放列表
+              <Button className="mt-3 w-full" disabled={biliSubmitting || !biliStatus.authenticated} onClick={() => void submitBili()}>
+                {biliSubmitting ? "本机解析中…" : "添加到播放列表"}
               </Button>
             </TabsContent>
 

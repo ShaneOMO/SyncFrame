@@ -5,8 +5,7 @@
  * - pollQrLogin：轮询扫码状态；用户确认后从 Set-Cookie 中提取 SESSDATA 等凭据；
  * - fetchNavInfo：用凭据调 /x/web-interface/nav 校验登录态并取昵称（绑定展示用）。
  *
- * 凭据只在服务端内存中流转：poll 成功后只把 SESSDATA 交给前端（浏览器 localStorage 持有），
- * 服务端不落盘、不跨请求保存。其余 cookie（bili_jct 等写操作凭据）就地丢弃。
+ * 扫码结果只交给同进程的本机会话存储，不回传 Cookie 给网页或云端。
  */
 
 import { BilibiliError } from "./bilibili.ts";

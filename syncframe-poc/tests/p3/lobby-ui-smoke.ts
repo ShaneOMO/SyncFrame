@@ -133,11 +133,11 @@ async function main(): Promise<void> {
     await host.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
     const roomUrl = new URL(host.url());
     const roomId = roomUrl.searchParams.get("room") ?? "";
-    check("创建后跳转房间页", roomUrl.pathname === "/room.html" && /^[0-9a-f-]{36}$/.test(roomId), `roomId=${roomId}`);
+    check("创建后跳转房间页", roomUrl.pathname === "/room.html" && /^r_[a-km-np-z2-9]{10}$/.test(roomId), `roomId=${roomId}`);
     await waitSyncRole(host, "host");
     check("房主 WS 已连接", true);
     check("房主显示账户名而不是房间名", (await host.locator("body").innerText()).includes(`${ADMIN_USER} · 房主`));
-    check("内部 GUID 不在房间界面展示", !(await host.locator("body").innerText()).includes(roomId));
+    check("内部短 ID 不在房间界面展示", !(await host.locator("body").innerText()).includes(roomId));
     const invite = await host.evaluate(() => sessionStorage.getItem(`syncframe-invite-${new URL(location.href).searchParams.get("room")}`) ?? "");
     check("邀请码已存会话（8 位）", /^[A-Z2-9]{8}$/.test(invite), invite);
 

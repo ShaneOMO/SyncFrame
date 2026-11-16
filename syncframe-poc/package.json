@@ -12,6 +12,7 @@
   "scripts": {
     "p1:server": "tsx --env-file-if-exists=.env apps/server/src/index.ts",
     "p1:web": "npm run dev -w @syncframe/web",
+    "p1:local": "tsx --env-file-if-exists=.env apps/local/src/index.ts",
     "p2:unit": "node --import tsx --test tests/sync/protocol-unit.test.ts",
     "p2:sim": "node --import tsx tests/sync/sync-sim-test.ts",
     "p2:browser": "node --import tsx tests/sync/sync-browser-test.ts",

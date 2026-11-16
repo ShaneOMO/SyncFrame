@@ -7,22 +7,20 @@
  * - 管理员：由环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 初始化，负责创建/删除/重置密码全部账户。
  *   注册接口已关闭。
  *
- * B 站凭证模型：SESSDATA 由浏览器 localStorage 持有，经 X-Bili-Sessdata 头随请求传入；
- * 服务端只在单次请求内使用（解析 playurl），不落盘、不跨请求缓存、不共享给其他成员。
- * 扫码登录只把 SESSDATA 交还浏览器（bili_jct 等写操作 cookie 就地丢弃）。
+ * B 站模型：登录会话、API 解析和 CDN 流量全部留在观看者的本机助手；
+ * 云端只保存标题与 BV/cid/ep 等同步标识，不接收 Cookie，不解析或代理 B 站视频。
  *
  * 接口：
  *  - GET  /api/health                                存活检查
  *  - POST /api/auth/login        {username,password} → userToken（无注册接口）
  *  - GET  /api/me                  (Bearer userToken)  当前用户（含 role）+ provider 列表（不含凭据）
  *  - PUT  /api/me/providers        (Bearer userToken)  全量替换自己的 provider 配置
- *  - GET  /api/bilibili/login/qrcode (Bearer userToken) 申请 B 站扫码登录二维码
- *  - GET  /api/bilibili/login/poll?qrcodeKey= (Bearer)   轮询扫码状态；确认后仅把 SESSDATA 交还浏览器保存 *  - GET  /api/admin/users         (Bearer admin)      账户列表（不含凭据）
+ *  - GET  /api/admin/users         (Bearer admin)      账户列表（不含凭据）
  *  - POST /api/admin/users         (Bearer admin)      创建账户
  *  - DELETE /api/admin/users/:name (Bearer admin)      删除账户
  *  - POST /api/admin/users/:name/password (Bearer admin) 重置密码
  *  - GET  /api/rooms                                   公开房间列表（大厅；带 userToken 时标记可删除的房间）
- *  - POST /api/rooms            (Bearer userToken) {name, inviteCode?, noInvite?} → 内部 GUID + 全实例唯一邀请码 + 成员会话
+ *  - POST /api/rooms            (Bearer userToken) {name, inviteCode?, noInvite?} → 内部短 ID + 全实例唯一邀请码 + 成员会话
  *                                                    （游客 401；noInvite=true 创建公开房间）
  *  - POST /api/rooms/join        {inviteCode, name?} 仅凭邀请码定位并加入房间
  *  - POST /api/rooms/:id/join   {name?, inviteCode?}（邀请链接内部路由；仅房主免邀请码）
@@ -33,19 +31,19 @@
  *  - GET  /api/search?provider=&keywords=&parent=&page= 搜索（同上）
  *  - POST /api/rooms/:id/media  注册媒体（仅房主）。三种形态：
  *      {provider:"direct", name, url}                 直链（校验 http/https、禁带凭证）
- *      {provider:"bilibili", url}                     B 站视频（凭证经 X-Bili-Sessdata，可选）
+ *      {provider:"bilibili", name, bilibili:{bvid,cid,epId?}}  本机解析后的 B 站同步标识
  *      {provider:<id>, path} + X-User-Token           房主本人账户的 OpenList provider
  *    自动注册同目录外挂字幕（srt/ass/ssa/vtt）
  *  - GET  /api/rooms/:id/media/:mediaId/grant        签发媒体地址（房间成员；跨房间 404）
- *      B 站：mcdn 可直连时下发 CDN 直链（浏览器直拉，服务器不耗带宽），否则下发 /stream 票据；两者均带回落地址
+ *      B 站：只返回视频标识，由浏览器另行请求本机助手
  *      OpenList：解析存储直链后统一下发 /stream 票据（网盘后端不放行 CORS，浏览器无法跨域拉流）
- *  - GET  /api/rooms/:id/media/:mediaId/stream?ticket=  流反代（透传 Range/HEAD；票据绑定已解析的上游地址；B 站/OpenList 按票据类型带上游头）
+ *  - GET  /api/rooms/:id/media/:mediaId/stream?ticket=  OpenList 流反代（透传 Range/HEAD；不支持 B 站票据）
  *  - DELETE /api/rooms/:id/media/:mediaId  从播放列表移除（仅房主；删除视频时联动移除同目录自动注册的字幕）
 
  *
  *  - WS   /ws?room=<id>（子协议 sf.token.<memberToken>）  同步房间（凭成员令牌入场）
  *
- * 令牌缓存于内存；OpenList 凭据只存在于服务端；B 站 SESSDATA 不经服务端持久化。
+ * 令牌缓存于内存；OpenList 凭据只存在于服务端；B 站会话只存在于本机助手。
  * 审计日志见 [audit] 行：只含 roomId/mediaId/clientId/动作，不含令牌、签名 URL 或文件路径。
  */
 
@@ -60,13 +58,11 @@ import { RoomManager } from "./sync-rooms.ts";
 import { RoomRegistry, tokenFingerprint } from "./room-auth.ts";
 import type { MediaEntry, MemberRecord } from "./room-auth.ts";
 import { UserAccounts } from "./user-accounts.ts";
-import { BilibiliClient, credentialFingerprint, getPlayUrlCached, parseSessdata, parseVideoId } from "./bilibili.ts";
-import { extractSessdata, fetchNavInfo, pollQrLogin, startQrLogin } from "./bilibili-login.ts";
 
 const PORT = Number(process.env.SERVER_PORT ?? 8787);
 
 // P4：账户系统。管理员由环境变量初始化（注册接口已关闭）；
-// OpenList / Bilibili 凭据不再来自环境变量，全部由各账户在 provider 配置中自行保存。
+// OpenList 凭据由各账户在 provider 配置中保存；B 站会话不进入云端。
 // 持久化：账户与房间落盘 DATA_DIR（默认 ./data，Docker 挂卷），重启保留。
 const DATA_DIR = process.env.DATA_DIR ?? "./data";
 const accounts = new UserAccounts(DATA_DIR);
@@ -91,25 +87,6 @@ const registry = new RoomRegistry({  dataDir: DATA_DIR, isAdmin: (username) => a
 
 // 房主私有 OpenList provider 的客户端缓存（凭据不出服务端）。
 const userClients = new Map<string, { client: OpenListClient; baseUrl: string }>();
-
-// Bilibili 凭证：由浏览器 localStorage 持有，经 X-Bili-Sessdata 头随请求传入。
-// 服务端只在本次请求内使用，不落盘、不跨请求保存、不共享给其他成员。
-const anonBilibili = new BilibiliClient();
-
-/** SESSDATA 上限：真实值约 60-120 字符，留足余量但不接受任意长串。 */
-const MAX_SESSDATA_LEN = 512;
-
-/** 从请求头取用户自带的 SESSDATA（只接受单个 `SESSDATA=...` 形态）。 */
-function requestSessdata(req: IncomingMessage): string | null {
-  const raw = req.headers["x-bili-sessdata"];
-  return typeof raw === "string" ? parseSessdata(raw, MAX_SESSDATA_LEN) : null;
-}
-
-/** 按凭证构造客户端；buvid 由凭证指纹派生，保持稳定且不产生跨请求状态。 */
-function bilibiliClientFor(sessdata: string | null): BilibiliClient {
-  if (!sessdata) return anonBilibili;
-  return new BilibiliClient({ cookie: sessdata, buvidSeed: credentialFingerprint(sessdata) });
-}
 
 async function userOpenListClient(username: string, providerId: string): Promise<{ client: OpenListClient; baseUrl: string } | null> {
   const user = accounts.getUser(username);
@@ -136,8 +113,7 @@ const roomManager = new RoomManager({
 
 /**
  * 全局安全响应头。
- * 凭证改为浏览器持有后，XSS 是最大的威胁面：CSP 用于阻断内联/第三方脚本，
- * 避免 localStorage 中的 SESSDATA 被注入脚本读走。
+ * CSP 阻断内联/第三方脚本，并只允许连接 SyncFrame、HTTPS 与本机助手。
  */
 const SECURITY_HEADERS: Record<string, string> = {
   // M3：任何情况下都不向外泄漏本页 URL（含 ?key= 邀请码）。
@@ -147,7 +123,8 @@ const SECURITY_HEADERS: Record<string, string> = {
   "Content-Security-Policy":
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; " +
-    "media-src 'self' blob: https:; connect-src 'self' https: ws: wss:; " +
+    "media-src 'self' blob: https: http://127.0.0.1:* http://localhost:*; " +
+    "connect-src 'self' https: ws: wss: http://127.0.0.1:* http://localhost:*; " +
     "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
 };
 
@@ -291,52 +268,6 @@ function requireRoomOwner(req: IncomingMessage, res: ServerResponse, roomId: str
     return null;
   }
   return username;
-}
-
-// ── Bilibili 扫码登录（SyncTV 式绑定）：凭据只在服务端，写入用户自己的 provider 配置 ──
-
-async function handleBiliQrCode(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const username = accounts.authenticate(bearerToken(req));
-  if (!username) {
-    sendJson(res, 401, { error: "需要登录（Bearer userToken）" });
-    return;
-  }
-  try {
-    const { url, qrcodeKey } = await startQrLogin();
-    sendJson(res, 200, { url, qrcodeKey });
-  } catch (err) {
-    sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
-  }
-}
-
-async function handleBiliQrPoll(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  const username = accounts.authenticate(bearerToken(req));
-  if (!username) {
-    sendJson(res, 401, { error: "需要登录（Bearer userToken）" });
-    return;
-  }
-  const qrcodeKey = (url.searchParams.get("qrcodeKey") ?? "").trim();
-  if (!qrcodeKey) {
-    sendJson(res, 400, { error: "缺少 qrcodeKey" });
-    return;
-  }
-  try {
-    const status = await pollQrLogin(qrcodeKey);
-    if (status.status !== "confirmed") {
-      sendJson(res, 200, { status: status.status });
-      return;
-    }
-    // 只取出 SESSDATA 交给浏览器保存；其余 cookie（bili_jct 等）就地丢弃，服务端不落盘。
-    const sessdata = extractSessdata(status.cookie);
-    if (!sessdata) {
-      sendJson(res, 500, { error: "登录确认但未取到 SESSDATA，请重试" });
-      return;
-    }
-    console.log(`[bilibili] 用户 ${username} 已完成扫码${status.uname ? `（${status.uname}）` : ""}，凭据交由浏览器保存`);
-    sendJson(res, 200, { status: "confirmed", uname: status.uname, sessdata });
-  } catch (err) {
-    sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
-  }
 }
 
 // ── 账户 / provider 配置 / 管理员 / 公开房间列表 ───────────────────────────
@@ -719,33 +650,29 @@ async function handleRegisterMedia(
     }
     return;
   }
-  // Bilibili provider：粘贴 BV 号 / av 号 / 番剧 ep/ss，服务端解析标题与分 P。
-  // 凭证由当前浏览器经 X-Bili-Sessdata 提供（可选）；服务端即用即弃，不落盘、不共享。
-  if (provider === "bilibili" || provider.startsWith("bilibili:")) {
-    const rawUrl = typeof parsed.url === "string" ? parsed.url : (typeof parsed.bvid === "string" ? parsed.bvid : "");
-    const ref = parseVideoId(rawUrl);
-    if (!ref) {
-      sendJson(res, 400, { error: "无法识别 bilibili 视频（支持 BV 号 / av 号 / 视频或番剧链接 / ep、ss 号）" });
+  // B 站元数据由本机助手解析；云端只接收同步所需的标题与视频标识，不接收凭证或播放地址。
+  if (provider === "bilibili") {
+    const raw = parsed.bilibili;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      sendJson(res, 400, { error: "缺少本机解析后的 bilibili 视频标识" });
       return;
     }
-    try {
-      const bc = bilibiliClientFor(requestSessdata(req));
-      // 番剧（ep/ss）：走 pgc 接口取单集 cid；普通视频走 web-interface view。
-      const info = ref.epId || ref.seasonId
-        ? await bc.getBangumiInfo({ epId: ref.epId, seasonId: ref.seasonId })
-        : await bc.getVideoInfo(ref);
-      const result = registry.registerMedia(roomId, member, "", { name: info.title, size: 0 }, [], {
-        provider: "哔哩哔哩",
-        bilibili: { bvid: info.bvid, cid: info.cid, aid: info.aid, epId: info.epId },
-      });
-      if ("error" in result) {
-        sendJson(res, 403, { error: result.error });
-        return;
-      }
-      sendJson(res, 200, { mediaId: result.mediaId, name: info.title, size: 0, related: result.related, provider: "哔哩哔哩" });
-    } catch (err) {
-      sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+    const ref = raw as Record<string, unknown>;
+    const name = (typeof parsed.name === "string" ? parsed.name.trim() : "").slice(0, 128) || "B 站视频";
+    const result = registry.registerMedia(roomId, member, "", { name, size: 0 }, [], {
+      provider: "哔哩哔哩",
+      bilibili: {
+        bvid: typeof ref.bvid === "string" ? ref.bvid : undefined,
+        cid: Number(ref.cid),
+        aid: ref.aid === undefined ? undefined : Number(ref.aid),
+        epId: ref.epId === undefined ? undefined : Number(ref.epId),
+      },
+    });
+    if ("error" in result) {
+      sendJson(res, 400, { error: result.error });
+      return;
     }
+    sendJson(res, 200, { mediaId: result.mediaId, name, size: 0, related: result.related, provider: "哔哩哔哩" });
     return;
   }
   const filePath = typeof parsed.path === "string" ? parsed.path : "";
@@ -811,10 +738,7 @@ async function handleDeleteMedia(req: IncomingMessage, res: ServerResponse, room
   sendJson(res, 200, { ok: true });
 }
 
-// ── Bilibili 播放地址解析（凭证请求内即用即弃）────────────────────────────
-
-const BILIBILI_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+// ── OpenList 播放地址解析（B 站播放完全由本机助手负责）────────────────────
 
 /** 为上游地址签发短时票据，返回浏览器可用的 /stream 反代地址。 */
 function issueStreamUrl(
@@ -827,7 +751,7 @@ function issueStreamUrl(
 ): string {
   const ticket = randomUUID();
   streamTickets.set(ticket, {
-    kind: opts.kind ?? "bilibili",
+    kind: opts.kind ?? "openlist",
     roomId,
     mediaId,
     memberClientId: member.clientId,
@@ -841,52 +765,6 @@ function issueStreamUrl(
   return `/api/rooms/${encodeURIComponent(roomId)}/media/${encodeURIComponent(mediaId)}/stream?ticket=${encodeURIComponent(ticket)}`;
 }
 
-/**
- * 解析 B 站播放地址。凭证只在本请求内使用，解析完即丢弃。
- * - 直连可用（mcdn 不校验 Referer）→ 下发 CDN 地址，浏览器直拉，服务器不耗带宽；
- * - 否则 → 下发 /stream 票据地址，由服务端反代兜底。
- * 两种情况都附带反代地址，供前端在直连失败时自动回落。
- */
-async function resolveBilibiliMedia(
-  roomId: string,
-  mediaId: string,
-  member: MemberRecord,
-  entry: MediaEntry,
-  sessdata: string | null,
-) {
-  const bc = bilibiliClientFor(sessdata);
-  const play = await getPlayUrlCached(
-    bc,
-    { bvid: entry.bilibili!.bvid, cid: entry.bilibili!.cid, epId: entry.bilibili!.epId },
-    credentialFingerprint(sessdata),
-  );
-  const proxyVideo = issueStreamUrl(roomId, mediaId, member, "video", play.url);
-  const proxyAudio = play.audioUrl
-    ? issueStreamUrl(roomId, mediaId, member, "audio", play.audioUrl)
-    : undefined;
-  const anonymous = !sessdata;
-  if (play.directOk) {
-    return {
-      url: play.url,
-      audioUrl: play.audioUrl,
-      fallbackUrl: proxyVideo,
-      fallbackAudioUrl: proxyAudio,
-      direct: true,
-      anonymous,
-      name: entry.name,
-      size: 0,
-    };
-  }
-  return {
-    url: proxyVideo,
-    audioUrl: proxyAudio,
-    direct: false,
-    anonymous,
-    name: entry.name,
-    size: 0,
-  };
-}
-
 async function handleGrant(
   req: IncomingMessage,
   res: ServerResponse,
@@ -898,11 +776,15 @@ async function handleGrant(
     sendJson(res, 401, { error: "成员令牌无效或已过期" });
     return;
   }
-  const sessdata = requestSessdata(req);
   try {
     const grant = await registry.grant(roomId, mediaId, member, (entry) => {
       if (entry.bilibili) {
-        return resolveBilibiliMedia(roomId, mediaId, member, entry, sessdata);
+        return Promise.resolve({
+          url: "",
+          name: entry.name,
+          size: 0,
+          bilibili: entry.bilibili,
+        });
       }
       // OpenList provider：用注册者（房间创建者）的凭据解析（凭据不出服务端）。
       if (entry.providerOwner && entry.providerId) {
@@ -910,7 +792,7 @@ async function handleGrant(
           if (!ol) throw new Error("provider 不可用");
           const resolved = await resolveWithClient(ol.client, ol.baseUrl, entry.path, req.headers["user-agent"] ?? "SyncFrame-PoC/0.1");
           // 跨域修复：网盘存储后端不对浏览器放行 CORS，movi-player 的 fetch/Range 拉流会被拦截。
-          // 与 B 站一致改走 /stream 票据反代（票据绑定已解析的上游地址，Range/HEAD 透传），
+          // 走 /stream 票据反代（票据绑定已解析的上游地址，Range/HEAD 透传），
           // 带 OpenList 源站 Referer（部分存储防盗链校验）与播放端 UA（部分存储按 UA 校验）。
           const streamUrl = issueStreamUrl(roomId, mediaId, member, "video", resolved.url, {
             kind: "openlist",
@@ -922,7 +804,7 @@ async function handleGrant(
         });
       }
       throw new Error("媒体来源 provider 不可用");
-    }, credentialFingerprint(sessdata));
+    });
     if (!grant) {
       // 跨房间/未注册 mediaId：404，不暴露存在性（P3 通过门槛：不能越权访问其他媒体）。
       sendJson(res, 404, { error: "媒体不存在或未授权" });
@@ -934,7 +816,7 @@ async function handleGrant(
   }
 }
 
-// ── Bilibili 流反代：浏览器 <video> 无法带 Referer，由服务端代拉流并透传 Range ──
+// ── OpenList 流反代：网盘存储的跨域与防盗链由服务端处理；B 站流量不进入这里 ──
 
 /** OpenList 反代的扩展名 → MIME（上游未给 Content-Type 时兜底用）。 */
 const OPENLIST_STREAM_MIME: Record<string, string> = {
@@ -963,9 +845,7 @@ const OPENLIST_STREAM_MIME: Record<string, string> = {
 };
 
 /**
- * /stream 响应 Content-Type：
- * - bilibili：固定 video/mp4（DASH 分段即 mp4，行为不变）；
- * - openlist：优先透传上游；上游是 octet-stream 或未给时按扩展名推断，兜底 video/mp4。
+ * /stream 响应 Content-Type：优先透传上游；上游是 octet-stream 或未给时按扩展名推断，兜底 video/mp4。
  */
 function streamContentType(t: StreamTicket, upstreamType: string | null): string {
   if (t.kind === "openlist") {
@@ -1024,17 +904,11 @@ async function handleStream(
   }
   try {
     const range = req.headers.range;
-    // 上游请求头按票据类型区分：B 站 CDN 需要桌面 UA + B 站 Referer；
-    // OpenList 存储后端按 OpenList 源站 Referer 防盗链，UA 与播放端保持一致。
-    const upstreamHeaders: Record<string, string> = t.kind === "openlist"
-      ? {
-          "User-Agent": t.userAgent ?? "SyncFrame-PoC/0.1",
-          ...(t.referer ? { Referer: t.referer } : {}),
-        }
-      : {
-          "User-Agent": BILIBILI_UA,
-          Referer: "https://www.bilibili.com",
-        };
+    // OpenList 存储后端按源站 Referer 防盗链，UA 与播放端保持一致。
+    const upstreamHeaders: Record<string, string> = {
+      "User-Agent": t.userAgent ?? "SyncFrame-PoC/0.1",
+      ...(t.referer ? { Referer: t.referer } : {}),
+    };
     if (range) upstreamHeaders.Range = range;
     // R4：按客户端方法透传，避免 HEAD 探测被当成 GET 把整片拉下来。
     const upstream = await fetch(t.upstreamUrl, {
@@ -1042,7 +916,7 @@ async function handleStream(
       headers: upstreamHeaders,
     });
     if (isHead && !upstream.ok) {
-      // 实测：B 站 CDN 不支持 HEAD（404）。用 bytes=0-0 探测总长度，供播放器确定文件大小。
+      // 部分存储不支持 HEAD。用 bytes=0-0 探测总长度，供播放器确定文件大小。
       const probe = await fetch(t.upstreamUrl, { headers: { ...upstreamHeaders, Range: "bytes=0-0" } });
       const total = probe.headers.get("content-range")?.match(/\/(\d+)\s*$/)?.[1];
       await probe.body?.cancel().catch(() => {});
@@ -1184,14 +1058,13 @@ function clientIp(req: IncomingMessage): string {
  * /stream 票据有效期：与成员令牌同量级（12h）。
  * 票据绑定「房间 + 媒体 + 轨道 + 成员」，成员被移除即刻失效，
  * 因此不需要靠"短 TTL + 定时换票"来控权——而定时换票会重载播放器、打断播放。
- * 真正的硬限制是 B 站 CDN 地址自身的 sign（约 2h），到期由错误恢复流程重新 playurl。
+ * OpenList 签名到期由错误恢复流程重新解析。
  */
 const STREAM_TICKET_TTL_MS = 12 * 60 * 60 * 1000;
 
 interface StreamTicket {
-  /** bilibili：上游是 B 站 CDN（带 B 站 UA/Referer，固定 video/mp4）；
-   *  openlist：上游是网盘存储直链（带 OpenList 源站 Referer，Content-Type 按上游/扩展名推断）。 */
-  kind: "bilibili" | "openlist";
+  /** 仅 OpenList：上游是网盘存储直链；B 站不使用云端票据或流代理。 */
+  kind: "openlist";
   roomId: string;
   mediaId: string;
   memberClientId: string;
@@ -1289,7 +1162,7 @@ const server = createServer(async (req, res) => {
     } else if (url.pathname === "/api/rooms" && req.method === "POST") {
       await handleCreateRoom(req, res, await readBody(req));
     } else if (url.pathname === "/api/rooms" && req.method === "GET") {
-      // 大厅摘要：内部 GUID、房主昵称、人数、视频数、邀请码策略及当前用户权限。
+      // 大厅摘要：内部短 ID、房主昵称、人数、视频数、邀请码策略及当前用户权限。
       // 可选 Bearer userToken：登录后标记自己创建的房间，大厅据此展示「删除」按钮。
       const viewer = accounts.authenticate(bearerToken(req));
       // 在线人数以内存同步房间为准：注册表成员记录保留 12h（令牌有效期内可重连），
@@ -1306,10 +1179,6 @@ const server = createServer(async (req, res) => {
         return;
       }
       await handleLogin(req, res, await readBody(req));
-    } else if (url.pathname === "/api/bilibili/login/qrcode" && req.method === "GET") {
-      await handleBiliQrCode(req, res);
-    } else if (url.pathname === "/api/bilibili/login/poll" && req.method === "GET") {
-      await handleBiliQrPoll(req, res, url);
     } else if (url.pathname === "/api/me" && req.method === "GET") {
       handleMe(req, res);
     } else if (url.pathname === "/api/me/providers" && req.method === "PUT") {
@@ -1426,7 +1295,7 @@ server.listen(PORT, () => {
   console.log(`  GET  /api/rooms | POST /api/rooms（需登录）| /api/rooms/:id/join   （房间列表 + 房间鉴权）`);
   console.log(`  GET  /api/browse?room=&provider= | /api/search?provider=&keywords=   （房主本人媒体库）`);
   console.log(`  POST /api/rooms/:id/media | GET .../media/:mediaId/grant   （受控映射 + 媒体地址）`);
-  console.log(`  POST media {provider:"bilibili", url}  支持 BV/av/视频链接/番剧 ep、ss（凭证走 X-Bili-Sessdata，可选）`);
-  console.log(`  GET  .../media/:mediaId/stream?ticket=   （流反代兜底：B 站 CDN / OpenList 存储，Range/HEAD 透传，票据绑定上游地址）`);
+  console.log(`  POST media {provider:"bilibili", name, bilibili}  （仅同步标识；登录/解析/播放走本机助手）`);
+  console.log(`  GET  .../media/:mediaId/stream?ticket=   （仅 OpenList 存储反代，Range/HEAD 透传）`);
   console.log(`  WS   /ws?room=<id>（子协议 sf.token.*）   （凭成员令牌入场）`);
 });

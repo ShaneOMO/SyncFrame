@@ -10,7 +10,7 @@ import { SyncClient, VirtualMediaClock } from "@syncframe/sync-protocol";
 import type { MediaAdapter } from "@syncframe/sync-protocol";
 import "movi-player/element/slim";
 import wasmUrl from "movi-player/movi.wasm?url";
-import { biliCredentialHeaders, loadBiliSessdata } from "@/bili-credential.ts";
+import { BiliLocalError, playLocalBiliVideo, type BiliVideoRef } from "@/bili-local.ts";
 import { clearSession } from "@/session.ts";
 import type { LocalUser } from "@/lib/user.ts";
 
@@ -205,7 +205,7 @@ function setPlayerSources(el: MoviElement, videoUrl: string, audioUrl?: string):
 
 async function probeDirect(url: string): Promise<boolean> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    const res = await fetch(url, { headers: { Range: "bytes=0-0" }, signal: AbortSignal.timeout(4000) });
     res.body?.cancel().catch(() => {});
     return res.ok;
   } catch {
@@ -223,7 +223,7 @@ export interface GrantResponse {
   fallbackUrl?: string;
   fallbackAudioUrl?: string;
   direct?: boolean;
-  anonymous?: boolean;
+  bilibili?: BiliVideoRef;
 }
 
 interface AppliedSource {
@@ -247,7 +247,7 @@ async function applyGrant(info: GrantResponse, f: EngineFlags): Promise<AppliedS
     f.preferProxy = true;
     return { ...proxy, reason: "直连探测失败（网络到 CDN 不通）" };
   }
-  return { ...proxy, reason: info.direct ? "本次会话已回落到代理" : "该视频的 CDN 节点要求 Referer，无法直连" };
+  return { ...proxy, reason: info.direct ? "CDN 直连失败，已改用本机助手" : "该 CDN 节点要求 Referer，使用本机助手" };
 }
 
 export function fmtTime(ms: number): string {
@@ -298,17 +298,10 @@ export function createEngine(ctx: EngineContext): Engine {
   const f = ctx.flags;
   const showBuiltInControls = ctx.mode === "player" && ctx.role === "host";
   let virtualClock: VirtualMediaClock | null = null;
-  let biliHintShown = false;
-
-  const showBiliCredentialHint = (): void => {
-    if (biliHintShown || loadBiliSessdata()) return;
-    biliHintShown = true;
-    ctx.ui.showBiliHint();
-  };
 
   const fetchGrant = async (mediaId: string): Promise<GrantResponse> => {
     const res = await fetch(`/api/rooms/${encodeURIComponent(ctx.roomId)}/media/${encodeURIComponent(mediaId)}/grant`, {
-      headers: { Authorization: `Bearer ${ctx.memberToken}`, ...biliCredentialHeaders() },
+      headers: { Authorization: `Bearer ${ctx.memberToken}` },
     });
     if (!res.ok) {
       if (res.status === 401) {
@@ -318,7 +311,15 @@ export function createEngine(ctx: EngineContext): Engine {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(`媒体授权失败（HTTP ${res.status}）：${body.error ?? "未知错误"}`);
     }
-    return (await res.json()) as GrantResponse;
+    const grant = (await res.json()) as GrantResponse;
+    if (!grant.bilibili) return grant;
+    try {
+      const local = await playLocalBiliVideo(grant.bilibili);
+      return { ...grant, ...local };
+    } catch (err) {
+      if (err instanceof BiliLocalError && err.status === 401) ctx.ui.showBiliHint();
+      throw err;
+    }
   };
 
   /** 换源后恢复播放位置与播放状态。 */
@@ -365,7 +366,7 @@ export function createEngine(ctx: EngineContext): Engine {
       f.recovering = true;
       if (f.currentSourceDirect) {
         f.preferProxy = true;
-        ctx.ui.setStatus("B 站直连失败，改用服务端代理重试…", true);
+        ctx.ui.setStatus("B 站 CDN 直连失败，改用本机助手重试…", true);
       } else {
         ctx.ui.setStatus("播放出错（可能是签名过期），正在换新凭证恢复…", true);
       }
@@ -459,7 +460,6 @@ export function createEngine(ctx: EngineContext): Engine {
             ? `已载入：${info.name}（${(info.size / 1024 / 1024).toFixed(1)} MiB）`
             : `已载入：${info.name}`,
         );
-        if (info.anonymous) showBiliCredentialHint();
         ctx.hooks.onMediaListChanged();
       },
     };

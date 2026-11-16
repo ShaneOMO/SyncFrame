@@ -6,7 +6,8 @@
  * - BilibiliClient.getPlayUrl：DASH 视频+音轨选取、mcdn 直连判定、durl 回退（mock fetch）；
  * - credentialFingerprint / extractSessdata：凭证不落库、不泄漏；
  * - UserAccounts：bilibili provider 只保留标签，旧版落盘 cookie 加载即丢弃；
- * - RoomRegistry：bilibili 媒体注册校验、幂等去重、grant 走 resolve 回调。
+ * - RoomRegistry：bilibili 媒体注册校验、幂等去重、grant 只返回同步标识；
+ * - 本机会话：重启复用、定期校验标记与退出清除。
  *
  * 运行：node --import tsx --test tests/p4/bilibili-provider.test.ts
  */
@@ -19,10 +20,10 @@ import {
   credentialFingerprint,
   isDirectPlayableHost,
   parseSessdata,
-} from "../../apps/server/src/bilibili.ts";
+} from "../../apps/local/src/bilibili.ts";
 import { UserAccounts } from "../../apps/server/src/user-accounts.ts";
 import { RoomRegistry } from "../../apps/server/src/room-auth.ts";
-import { extractSessdata } from "../../apps/server/src/bilibili-login.ts";
+import { extractSessdata } from "../../apps/local/src/bilibili-login.ts";
 
 // ── parseVideoId ────────────────────────────────────────────
 
@@ -319,7 +320,7 @@ test("加载旧版 users.json 时丢弃已落盘的 B 站 cookie", async () => {
 // ── Bilibili 扫码登录：Set-Cookie 提取 ───────────────────────
 
 test("extractLoginCookie 提取 SESSDATA 等并拒绝缺失", async () => {
-  const { extractLoginCookie } = await import("../../apps/server/src/bilibili-login.ts");
+  const { extractLoginCookie } = await import("../../apps/local/src/bilibili-login.ts");
   const cookie = extractLoginCookie([
     "SESSDATA=abc123; Domain=.bilibili.com; Path=/; HttpOnly",
     "bili_jct=xyz; Domain=.bilibili.com; Path=/",
@@ -377,51 +378,52 @@ test("registerMedia 接受番剧条目（epId + cid），并拒绝无 bvid 无 e
   assert.deepEqual(bad, { error: "非法 bilibili 视频标识" });
 });
 
-test("grant 对 bilibili 条目调用 resolve 回调（流地址由服务端生成）", async () => {
+test("grant 对 bilibili 条目只返回同步标识，不生成云端流地址", async () => {
   const { registry, roomId, host } = makeHost();
+  const ref = { bvid: "BV1xx411c7mD", cid: 123456, aid: 170001 };
   const { mediaId } = registry.registerMedia(roomId, host, "", { name: "测试视频", size: 0 }, [], {
     provider: "哔哩哔哩",
-    bilibili: { bvid: "BV1xx411c7mD", cid: 123456, aid: 170001 },
+    bilibili: ref,
   }) as { mediaId: string };
   const grant = await registry.grant(roomId, mediaId, host, (entry) => {
-    assert.deepEqual(entry.bilibili, { bvid: "BV1xx411c7mD", cid: 123456, aid: 170001 });
-    return Promise.resolve({ url: `/api/rooms/${roomId}/media/${mediaId}/stream?token=t`, name: entry.name, size: 0 });
+    assert.deepEqual(entry.bilibili, ref);
+    return Promise.resolve({ url: "", name: entry.name, size: 0, bilibili: entry.bilibili });
   });
   assert.ok(grant);
-  assert.match(grant.url, /\/stream\?token=/);
-  // 60s 缓存：第二次直接复用，不再调用 resolve。
+  assert.equal(grant.url, "");
+  assert.deepEqual(grant.bilibili, ref);
+  assert.ok(!("fallbackUrl" in grant));
+  assert.ok(!("sessdata" in grant));
+  assert.ok(!("cookie" in grant));
+
   let resolveCalls = 0;
   const cached = await registry.grant(roomId, mediaId, host, () => {
     resolveCalls++;
-    return Promise.resolve({ url: "x", name: "n", size: 0 });
+    return Promise.resolve({ url: "", name: "n", size: 0 });
   });
   assert.equal(resolveCalls, 0);
   assert.equal(cached.cached, true);
+  assert.ok(!("at" in (cached as unknown as Record<string, unknown>)), "内部字段 at 不应外泄");
 });
 
-test("grant 缓存按凭证变体隔离，且不泄漏内部字段", async () => {
-  const { registry, roomId, host } = makeHost();
-  const { mediaId } = registry.registerMedia(roomId, host, "", { name: "测试视频", size: 0 }, [], {
-    provider: "哔哩哔哩",
-    bilibili: { bvid: "BV1xx411c7mD", cid: 123456, aid: 170001 },
-  }) as { mediaId: string };
 
-  const resolveAs = (tag: string) => () =>
-    Promise.resolve({ url: `/stream?ticket=${tag}`, name: "n", size: 0, audioUrl: `/a?ticket=${tag}` });
+test("本机 B 站会话跨助手重启复用，退出后彻底清除", async () => {
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const { BiliSessionStore } = await import("../../apps/local/src/session.ts");
+  const dir = mkdtempSync(path.join(tmpdir(), "syncframe-local-session-"));
+  const store = new BiliSessionStore(dir);
+  store.save("SESSDATA=local-only; DedeUserID=42", "本机用户");
+  assert.equal(store.needsValidation(), false);
 
-  const anon = await registry.grant(roomId, mediaId, host, resolveAs("anon"), "anon");
-  const bound = await registry.grant(roomId, mediaId, host, resolveAs("bound"), "fp1234");
-  assert.ok(anon && bound);
-  assert.match(anon.url, /anon/);
-  assert.match(bound.url, /bound/, "切换凭证后必须重新解析，不能复用匿名结果");
-  assert.equal(bound.cached, false);
+  const restarted = new BiliSessionStore(dir);
+  assert.equal(restarted.get()?.uname, "本机用户");
+  assert.equal(restarted.get()?.cookie, "SESSDATA=local-only; DedeUserID=42");
+  assert.equal(restarted.needsValidation(), false);
+  assert.ok(readFileSync(path.join(dir, "bilibili-session.json"), "utf8").includes("local-only"));
 
-  // 同变体才复用
-  const again = await registry.grant(roomId, mediaId, host, resolveAs("other"), "fp1234");
-  assert.ok(again);
-  assert.match(again.url, /bound/);
-  assert.equal(again.cached, true);
-
-  // 内部缓存时间戳 at 不得出现在响应里
-  assert.ok(!("at" in (bound as unknown as Record<string, unknown>)), "内部字段 at 不应外泄");
+  restarted.clear();
+  assert.equal(restarted.get(), null);
+  assert.equal(new BiliSessionStore(dir).get(), null);
 });

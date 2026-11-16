@@ -393,20 +393,20 @@ function RoomPage() {
         </div>
       </main>
 
-      {/* B 站未绑定提示 */}
+      {/* B 站本机登录提示 */}
       <Dialog open={ui.biliHint} onOpenChange={(open) => !open && actions.closeBiliHint()}>
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
-            <DialogTitle>还没绑定 B 站账号</DialogTitle>
+            <DialogTitle>需要在本机登录 B 站</DialogTitle>
             <DialogDescription className="break-words">
-              现在以匿名身份解析 B 站视频：画质最高 720P，番剧和会员内容可能播不了。绑定后凭证只存在本浏览器，服务器不保存，也不会共享给他人。
+              B 站视频不支持匿名播放。请启动本机助手并扫码登录；会话只保存在这台电脑，云端仅同步视频标识和播放状态。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={actions.closeBiliHint}>
-              先这么看
+              取消
             </Button>
-            <Button onClick={() => (location.href = "/settings.html")}>去绑定</Button>
+            <Button onClick={() => (location.href = "/settings.html")}>去登录</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

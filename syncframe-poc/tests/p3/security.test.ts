@@ -170,8 +170,8 @@ test("账户管理：非管理员 403；管理员可创建/删除/重置密码",
   assert.equal(delSelf.status, 400);
 });
 
-test("创建房间：返回内部 GUID + 唯一邀请码 + 房主成员令牌", () => {
-  assert.match(created.roomId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+test("创建房间：返回简洁内部 ID + 唯一邀请码 + 房主成员令牌", () => {
+  assert.match(created.roomId, /^r_[a-km-np-z2-9]{10}$/);
   assert.match(created.inviteCode, /^[A-Z2-9]{8}$/);
   assert.equal(created.role, "host");
   assert.ok(created.memberToken.length > 20);
@@ -237,7 +237,7 @@ test("登录成员与游客分轨显示；失效账户令牌不能降级成游�
   assert.equal(expired.status, 401);
 });
 
-test("手动加入只需要邀请码，不需要知道内部房间 GUID", async () => {
+test("手动加入只需要邀请码，不需要知道内部房间 ID", async () => {
   const joined = await postJson(BASE, "/api/rooms/join", { inviteCode: created.inviteCode, name: "邀请码观众" });
   assert.equal(joined.status, 200);
   assert.equal(joined.data.roomId, created.roomId);

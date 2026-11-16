@@ -3,12 +3,9 @@
  *
  * 职责：
  * - 从用户输入解析 BV 号 / av 号 / 番剧 ep/ss / bilibili 链接；
- * - 经服务端代理解析：view（取标题/cid）→ playurl（取可播放流地址）；
- *   所有请求带桌面 UA + Referer（bilibili 对流地址校验 Referer）；
- *   SESSDATA 由调用方按请求提供（前端 localStorage 持有，服务端不落盘），匿名也可播放。
- * - 播放地址分两条路：
- *   * 直连：mcdn 边缘节点不校验 Referer 且带 ACAO:*，浏览器可直接拉流（服务器 0 带宽）；
- *   * 反代：其余主机（如 *.bilivideo.com）强制校验 Referer，只能走服务端 /stream（见 index.ts）。
+ * - 由本机助手解析：view（取标题/cid）→ playurl（取可播放流地址）；
+ *   所有请求带桌面 UA + Referer，登录 Cookie 只从本机会话存储读取。
+ * - 播放地址分两条路：可跨域的 CDN 由浏览器直连；其余节点只经本机助手转发，绝不进入云端。
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -57,7 +54,7 @@ export interface BilibiliPlayUrl {
   quality: string;
   /**
    * 浏览器可否直连该地址（不校验 Referer 且允许跨域）。
-   * true 时由浏览器直接拉流（服务器不耗带宽）；false 时必须走 /stream 反代。
+   * true 时由浏览器直接拉流；false 时只走本机助手 /stream 转发。
    */
   directOk: boolean;
 }
@@ -214,7 +211,7 @@ export class BilibiliClient {
    * 取可播放地址：优先 DASH（mp4 单文件流，带 cookie 时可到 1080P+/Dolby；
    * 未登录最多 1080P，番剧/会员内容可能直接 -403），失败回退 durl mp4 流。
    * ref 传 {bvid, cid}（普通视频）或 {epId, cid}（番剧，走 /pgc/player/web/playurl）。
-   * URL 仅供服务端拉流（Referer 敏感）。
+   * URL 由浏览器直连或本机助手拉流（Referer 敏感）。
    */
   async getPlayUrl(ref: { bvid?: string; cid: number; epId?: number }): Promise<BilibiliPlayUrl> {
     const playUrlPath = ref.epId
