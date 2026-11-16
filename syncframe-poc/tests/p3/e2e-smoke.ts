@@ -115,7 +115,7 @@ async function main(): Promise<void> {
     const guestCreate = await createRoom(BASE, "游客");
     check("游客创建房间 401", guestCreate.status === 401);
     const created = (await createRoom(BASE, "房主", hostUserToken)).data as CreatedRoom;
-    check("创建房间返回内部短 ID + 邀请码", Boolean(created.roomId && created.inviteCode));
+    check("创建房间返回内部 GUID + 邀请码", Boolean(created.roomId && created.inviteCode));
     const viewer = await joinRoom(BASE, created.roomId, "观众甲", created.inviteCode);
     check("观众凭邀请码加入", viewer.status === 200 && viewer.data.role === "viewer");
 

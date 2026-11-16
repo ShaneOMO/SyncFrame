@@ -10,7 +10,7 @@ import { SyncClient, VirtualMediaClock } from "@syncframe/sync-protocol";
 import type { MediaAdapter } from "@syncframe/sync-protocol";
 import "movi-player/element/slim";
 import wasmUrl from "movi-player/movi.wasm?url";
-import { BiliLocalError, playLocalBiliVideo, type BiliVideoRef } from "@/bili-local.ts";
+import { biliCredentialHeaders, saveBiliCredential } from "@/bili-credential.ts";
 import { clearSession } from "@/session.ts";
 import type { LocalUser } from "@/lib/user.ts";
 
@@ -205,7 +205,7 @@ function setPlayerSources(el: MoviElement, videoUrl: string, audioUrl?: string):
 
 async function probeDirect(url: string): Promise<boolean> {
   try {
-    const res = await fetch(url, { headers: { Range: "bytes=0-0" }, signal: AbortSignal.timeout(4000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
     res.body?.cancel().catch(() => {});
     return res.ok;
   } catch {
@@ -223,7 +223,7 @@ export interface GrantResponse {
   fallbackUrl?: string;
   fallbackAudioUrl?: string;
   direct?: boolean;
-  bilibili?: BiliVideoRef;
+  biliCredential?: unknown;
 }
 
 interface AppliedSource {
@@ -237,6 +237,12 @@ async function applyGrant(info: GrantResponse, f: EngineFlags): Promise<AppliedS
   if (info.direct === undefined) {
     return { url: info.url, audioUrl: info.audioUrl, direct: true };
   }
+  if (info.direct && !info.fallbackUrl) {
+    const videoOk = await probeDirect(info.url);
+    const audioOk = videoOk && (!info.audioUrl || await probeDirect(info.audioUrl));
+    if (audioOk) return { url: info.url, audioUrl: info.audioUrl, direct: true };
+    throw new Error("当前 B 站 CDN 不允许浏览器直连；已按设置拒绝使用云端视频代理");
+  }
   const proxy = {
     url: info.fallbackUrl ?? info.url,
     audioUrl: info.fallbackAudioUrl ?? info.audioUrl,
@@ -247,7 +253,7 @@ async function applyGrant(info: GrantResponse, f: EngineFlags): Promise<AppliedS
     f.preferProxy = true;
     return { ...proxy, reason: "直连探测失败（网络到 CDN 不通）" };
   }
-  return { ...proxy, reason: info.direct ? "CDN 直连失败，已改用本机助手" : "该 CDN 节点要求 Referer，使用本机助手" };
+  return { ...proxy, reason: info.direct ? "本次会话已回落到代理" : "该视频的 CDN 节点要求 Referer，无法直连" };
 }
 
 export function fmtTime(ms: number): string {
@@ -298,28 +304,35 @@ export function createEngine(ctx: EngineContext): Engine {
   const f = ctx.flags;
   const showBuiltInControls = ctx.mode === "player" && ctx.role === "host";
   let virtualClock: VirtualMediaClock | null = null;
+  let biliHintShown = false;
+
+  const showBiliCredentialHint = (): void => {
+    if (biliHintShown || !ctx.localUser) return;
+    biliHintShown = true;
+    ctx.ui.showBiliHint();
+  };
 
   const fetchGrant = async (mediaId: string): Promise<GrantResponse> => {
     const res = await fetch(`/api/rooms/${encodeURIComponent(ctx.roomId)}/media/${encodeURIComponent(mediaId)}/grant`, {
-      headers: { Authorization: `Bearer ${ctx.memberToken}` },
+      headers: { Authorization: `Bearer ${ctx.memberToken}`, ...biliCredentialHeaders() },
     });
     if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string; biliCredential?: unknown };
+      if (body.biliCredential) saveBiliCredential(body.biliCredential);
+      if (body.code === "BILI_AUTH_REQUIRED") {
+        showBiliCredentialHint();
+        throw new Error(body.error ?? "请先登录 B 站");
+      }
+      if (body.code === "BILI_USER_REQUIRED") throw new Error(body.error ?? "B 站功能仅限登录用户");
       if (res.status === 401) {
         clearSession(ctx.roomId);
         location.replace(`/lobby.html?room=${encodeURIComponent(ctx.roomId)}&expired=1`);
       }
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(`媒体授权失败（HTTP ${res.status}）：${body.error ?? "未知错误"}`);
     }
     const grant = (await res.json()) as GrantResponse;
-    if (!grant.bilibili) return grant;
-    try {
-      const local = await playLocalBiliVideo(grant.bilibili);
-      return { ...grant, ...local };
-    } catch (err) {
-      if (err instanceof BiliLocalError && err.status === 401) ctx.ui.showBiliHint();
-      throw err;
-    }
+    if (grant.biliCredential) saveBiliCredential(grant.biliCredential);
+    return grant;
   };
 
   /** 换源后恢复播放位置与播放状态。 */
@@ -365,8 +378,7 @@ export function createEngine(ctx: EngineContext): Engine {
       }
       f.recovering = true;
       if (f.currentSourceDirect) {
-        f.preferProxy = true;
-        ctx.ui.setStatus("B 站 CDN 直连失败，改用本机助手重试…", true);
+        ctx.ui.setStatus("直连媒体播放失败，正在重新获取 CDN 地址…", true);
       } else {
         ctx.ui.setStatus("播放出错（可能是签名过期），正在换新凭证恢复…", true);
       }

@@ -393,18 +393,18 @@ function RoomPage() {
         </div>
       </main>
 
-      {/* B 站本机登录提示 */}
+      {/* B 站未登录提示（仅登录用户展示；游客由服务端权限错误提示） */}
       <Dialog open={ui.biliHint} onOpenChange={(open) => !open && actions.closeBiliHint()}>
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
-            <DialogTitle>需要在本机登录 B 站</DialogTitle>
+            <DialogTitle>需要登录自己的 B 站账号</DialogTitle>
             <DialogDescription className="break-words">
-              B 站视频不支持匿名播放。请启动本机助手并扫码登录；会话只保存在这台电脑，云端仅同步视频标识和播放状态。
+              B 站功能仅限 SyncFrame 登录用户，不支持匿名播放。完整凭据只存在本浏览器并自动续期，服务器不保存，也不会共享给其他成员。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={actions.closeBiliHint}>
-              取消
+              暂不播放
             </Button>
             <Button onClick={() => (location.href = "/settings.html")}>去登录</Button>
           </DialogFooter>

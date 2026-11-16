@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { SyncClient } from "@syncframe/sync-protocol";
 import { loadSession, clearSession, saveSession, loadInviteCode } from "@/session.ts";
 import type { RoomSession } from "@/session.ts";
+import { biliCredentialHeaders, saveBiliCredential } from "@/bili-credential.ts";
 import { loadUser } from "@/lib/user.ts";
 import { AccountExpiredError, joinRoom, restoreRoomSession, verifyAccount } from "@/lib/room-membership";
 import {
@@ -473,10 +474,12 @@ export function useRoom(): Bootstrap {
               "Content-Type": "application/json",
               ...{ Authorization: `Bearer ${sess.memberToken}` },
               ...(localUserRef.current ? { "X-User-Token": localUserRef.current.token } : {}),
+              ...biliCredentialHeaders(),
             },
             body: JSON.stringify(payload),
           });
-          const body = (await res.json().catch(() => ({}))) as { mediaId?: string; name?: string; error?: string };
+          const body = (await res.json().catch(() => ({}))) as { mediaId?: string; name?: string; error?: string; biliCredential?: unknown };
+          if (body.biliCredential) saveBiliCredential(body.biliCredential);
           if (!res.ok || !body.mediaId) {
             setAddMsg({ text: `添加失败 HTTP ${res.status}: ${body.error ?? "未知错误"}`, ok: false });
             return false;

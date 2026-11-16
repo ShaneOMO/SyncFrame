@@ -3,9 +3,8 @@
  *
  * 职责：
  * - 从用户输入解析 BV 号 / av 号 / 番剧 ep/ss / bilibili 链接；
- * - 由本机助手解析：view（取标题/cid）→ playurl（取可播放流地址）；
- *   所有请求带桌面 UA + Referer，登录 Cookie 只从本机会话存储读取。
- * - 播放地址分两条路：可跨域的 CDN 由浏览器直连；其余节点只经本机助手转发，绝不进入云端。
+ * - 云端仅在单次请求内鉴权与解析：view → playurl；完整凭据由浏览器按请求提供，绝不落盘。
+ * - 播放只接受可浏览器直连的 mcdn 节点及备用地址；其余节点明确失败，不走云端反代。
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -39,13 +38,60 @@ export interface BangumiEpisodeRef {
   title: string;
 }
 
+export interface BiliCredential {
+  version: 1;
+  sessdata: string;
+  biliJct: string;
+  buvid3: string;
+  dedeUserId: string;
+  acTimeValue: string;
+  uname: string;
+  lastRefreshCheckAt: number;
+  updatedAt: number;
+}
+
+export function biliCredentialCookie(credential: BiliCredential, includeBuvid = false): string {
+  return `${includeBuvid ? `buvid3=${credential.buvid3}; ` : ""}SESSDATA=${credential.sessdata}; bili_jct=${credential.biliJct}; DedeUserID=${credential.dedeUserId}`;
+}
+
+export function parseBiliCredential(raw: string | null | undefined, maxLen = 4096): BiliCredential | null {
+  if (typeof raw !== "string" || !raw || raw.length > maxLen) return null;
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    const valid = (input: unknown, max = 512): input is string =>
+      typeof input === "string" && input.length > 0 && input.length <= max && !/[;\s\u0000-\u001f]/.test(input);
+    if (
+      value.version !== 1
+      || !valid(value.sessdata)
+      || !valid(value.biliJct)
+      || !valid(value.buvid3, 128)
+      || !valid(value.dedeUserId, 64)
+      || !valid(value.acTimeValue, 1024)
+    ) return null;
+    return {
+      version: 1,
+      sessdata: value.sessdata,
+      biliJct: value.biliJct,
+      buvid3: value.buvid3,
+      dedeUserId: value.dedeUserId,
+      acTimeValue: value.acTimeValue,
+      uname: typeof value.uname === "string" ? value.uname.slice(0, 128) : "",
+      lastRefreshCheckAt: typeof value.lastRefreshCheckAt === "number" && Number.isFinite(value.lastRefreshCheckAt) ? value.lastRefreshCheckAt : 0,
+      updatedAt: typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) ? value.updatedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface BilibiliPlayUrl {
   /** 视频流地址（dash 最高画质 / durl 首段）。 */
   url: string;
   /** 独立音轨地址（dash.audio 最高码率）。durl 音画合一时为空。 */
   audioUrl?: string;
-  /** 备用地址（dash 无；durl 多段时取首段备用）。 */
-  backupUrl?: string;
+  /** 备用地址（DASH 可返回多个候选 CDN）。 */
+  backupUrl?: string[];
+  backupAudioUrl?: string[];
   /** 流总时长（秒），用于无法取 size 时的提示。 */
   timelength: number;
   /** 流容器类型：mp4 / flv（浏览器仅保证 mp4 可播）。 */
@@ -54,7 +100,7 @@ export interface BilibiliPlayUrl {
   quality: string;
   /**
    * 浏览器可否直连该地址（不校验 Referer 且允许跨域）。
-   * true 时由浏览器直接拉流；false 时只走本机助手 /stream 转发。
+   * true 时由浏览器直接拉流；false 时只能尝试备用直连节点，否则拒绝播放。
    */
   directOk: boolean;
 }
@@ -127,12 +173,12 @@ export class BilibiliClient {
   /** 匿名访问也需要 buvid3/b_nut，否则 bilibili 风控直接 412。 */
   private readonly anonCookie: string;
 
-  constructor(opts: { cookie?: string; timeoutMs?: number; buvidSeed?: string } = {}) {
+  constructor(opts: { cookie?: string; timeoutMs?: number; buvidSeed?: string; buvid3?: string } = {}) {
     this.cookie = opts.cookie?.trim() || undefined;
     this.timeoutMs = opts.timeoutMs ?? 15_000;
-    // 按凭证派生的稳定 buvid3：避免每个请求换设备指纹触发风控，同时不落任何持久化状态。
     const seed = (opts.buvidSeed ?? randomUUID()).replace(/[^a-z0-9]/gi, "");
-    this.anonCookie = `buvid3=${seed.slice(0, 32)}infoc; b_nut=${Math.floor(Date.now() / 1000)}`;
+    const buvid3 = opts.buvid3 ?? `${seed.slice(0, 32)}infoc`;
+    this.anonCookie = `buvid3=${buvid3}; b_nut=${Math.floor(Date.now() / 1000)}`;
   }
 
   private async apiGet<T>(path: string, payloadKey: "data" | "result" = "data"): Promise<T> {
@@ -209,9 +255,9 @@ export class BilibiliClient {
 
   /**
    * 取可播放地址：优先 DASH（mp4 单文件流，带 cookie 时可到 1080P+/Dolby；
-   * 未登录最多 1080P，番剧/会员内容可能直接 -403），失败回退 durl mp4 流。
+   * 未登录或权限不足时番剧/会员内容可能直接 -403），失败回退 durl mp4 流。
    * ref 传 {bvid, cid}（普通视频）或 {epId, cid}（番剧，走 /pgc/player/web/playurl）。
-   * URL 由浏览器直连或本机助手拉流（Referer 敏感）。
+   * URL 只供浏览器直连；云端不拉取媒体字节。
    */
   async getPlayUrl(ref: { bvid?: string; cid: number; epId?: number }): Promise<BilibiliPlayUrl> {
     const playUrlPath = ref.epId
@@ -219,8 +265,8 @@ export class BilibiliClient {
       : `/x/player/playurl?bvid=${encodeURIComponent(ref.bvid!)}&cid=${ref.cid}&qn=127&fnval=4048&platform=pc`;
     const dash = await this.apiGet<{
       dash?: {
-        video: { id: number; baseUrl: string; base_url?: string; codecid: number }[];
-        audio?: { id: number; baseUrl: string; base_url?: string }[];
+        video: { id: number; baseUrl: string; base_url?: string; backupUrl?: string[]; backup_url?: string[]; codecid: number }[];
+        audio?: { id: number; baseUrl: string; base_url?: string; backupUrl?: string[]; backup_url?: string[] }[];
         duration: number;
       };
       durl?: { url: string; backup_url?: string[] }[];
@@ -246,6 +292,8 @@ export class BilibiliClient {
         return {
           url,
           audioUrl,
+          backupUrl: [...(best.backupUrl ?? best.backup_url ?? [])],
+          backupAudioUrl: bestAudio ? [...(bestAudio.backupUrl ?? bestAudio.backup_url ?? [])] : undefined,
           timelength,
           format: "mp4",
           quality: qualityOf(best.id),
@@ -258,7 +306,7 @@ export class BilibiliClient {
       const first = dash.durl[0];
       return {
         url: first.url,
-        backupUrl: first.backup_url?.[0],
+        backupUrl: [...(first.backup_url ?? [])],
         timelength,
         format: dash.format?.toLowerCase().includes("mp4") ? "mp4" : "flv",
         quality: qualityOf(dash.quality ?? 0),
@@ -267,6 +315,18 @@ export class BilibiliClient {
     }
     throw new BilibiliError("bilibili 未返回可播放流地址（可能需要登录 cookie）");
   }
+}
+
+export function requireDirectBilibiliPlay(play: BilibiliPlayUrl): BilibiliPlayUrl {
+  if (play.format !== "mp4") throw new BilibiliError("B 站返回了浏览器不支持的 FLV 流，且不允许云端转封装或代理");
+  const url = [play.url, ...(play.backupUrl ?? [])].find(isDirectPlayableHost);
+  const audioUrl = play.audioUrl
+    ? [play.audioUrl, ...(play.backupAudioUrl ?? [])].find(isDirectPlayableHost)
+    : undefined;
+  if (!url || (play.audioUrl && !audioUrl)) {
+    throw new BilibiliError("未找到允许浏览器直连的 B 站 CDN 节点；为遵守本地播放约束，未使用云端代理");
+  }
+  return { ...play, url, audioUrl, backupUrl: undefined, backupAudioUrl: undefined, directOk: true };
 }
 
 /** playurl 结果缓存（按 bvid:cid），避免每次 grant/stream 都请求 bilibili。 */

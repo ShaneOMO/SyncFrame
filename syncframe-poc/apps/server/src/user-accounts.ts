@@ -7,7 +7,8 @@
  * - 角色：admin（管理账户）/ user（普通用户）。游客（未登录）只能凭邀请码加入房间，
  *   不能创建房间、不能配置 provider；
  * - OpenList 凭据保存在服务端 provider 配置中；
- *   **Bilibili 会话不入服务端**：登录与播放均由本机助手处理；此处仅兼容旧版展示标签。
+ *   **Bilibili 完整凭据不入服务端**：由登录用户的浏览器 localStorage 持有，
+ *   经 X-Bili-Credential 传入，服务端仅在单次请求内续期或解析。
  *
  * 持久化：传入 dataDir 后，账户（含 OpenList 凭据）经 store.ts 落盘为 <dataDir>/syncframe.db
  * （SQLite，单条写入原子）；重启后账户保留，用户令牌仍内存态（重启需重新登录）。
@@ -28,7 +29,7 @@ export interface OpenListProviderConfig {
   password: string;
 }
 
-/** 旧版 Bilibili provider 的兼容标签；会话由本机助手持有。 */
+/** 旧版 Bilibili provider 的展示标签；完整可续期凭据由浏览器持有。 */
 export interface BilibiliProviderConfig {
   id: string;
   kind: "bilibili";
@@ -265,7 +266,7 @@ export class UserAccounts {
         next.set(id, { id, kind: "openlist", label: label.slice(0, 24), baseUrl: baseUrl.replace(/\/+$/, ""), username: usernameCfg, password });
       } else if (p.kind === "bilibili") {
         const label = (typeof p.label === "string" ? p.label.trim() : "") || "哔哩哔哩";
-        // 会话由本机助手持有；旧接口即使收到 cookie 也直接丢弃。
+        // 完整凭据由浏览器持有，服务端只保留展示标签（即使请求里带了 cookie 也丢弃）。
         next.set(id, { id, kind: "bilibili", label: label.slice(0, 24) });
       } else {
         return { ok: false, error: "仅支持 openlist / bilibili provider" };

@@ -7,20 +7,22 @@
  * - 管理员：由环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 初始化，负责创建/删除/重置密码全部账户。
  *   注册接口已关闭。
  *
- * B 站模型：登录会话、API 解析和 CDN 流量全部留在观看者的本机助手；
- * 云端只保存标题与 BV/cid/ep 等同步标识，不接收 Cookie，不解析或代理 B 站视频。
+ * B 站仅限 SyncFrame 登录用户。完整可续期凭据由浏览器 localStorage 持有，
+ * 经 X-Bili-Credential 随请求传入；服务端仅在单次请求内扫码、续期、解析，绝不落盘或共享。
+ * B 站媒体字节只能由浏览器直连 CDN，云端不签发 B 站流代理票据。
  *
  * 接口：
  *  - GET  /api/health                                存活检查
  *  - POST /api/auth/login        {username,password} → userToken（无注册接口）
  *  - GET  /api/me                  (Bearer userToken)  当前用户（含 role）+ provider 列表（不含凭据）
  *  - PUT  /api/me/providers        (Bearer userToken)  全量替换自己的 provider 配置
- *  - GET  /api/admin/users         (Bearer admin)      账户列表（不含凭据）
+ *  - GET  /api/bilibili/login/qrcode (Bearer userToken) 申请 B 站扫码登录二维码
+ *  - GET  /api/bilibili/login/poll?qrcodeKey= (Bearer)   轮询扫码状态；确认后仅把 SESSDATA 交还浏览器保存 *  - GET  /api/admin/users         (Bearer admin)      账户列表（不含凭据）
  *  - POST /api/admin/users         (Bearer admin)      创建账户
  *  - DELETE /api/admin/users/:name (Bearer admin)      删除账户
  *  - POST /api/admin/users/:name/password (Bearer admin) 重置密码
  *  - GET  /api/rooms                                   公开房间列表（大厅；带 userToken 时标记可删除的房间）
- *  - POST /api/rooms            (Bearer userToken) {name, inviteCode?, noInvite?} → 内部短 ID + 全实例唯一邀请码 + 成员会话
+ *  - POST /api/rooms            (Bearer userToken) {name, inviteCode?, noInvite?} → 内部 GUID + 全实例唯一邀请码 + 成员会话
  *                                                    （游客 401；noInvite=true 创建公开房间）
  *  - POST /api/rooms/join        {inviteCode, name?} 仅凭邀请码定位并加入房间
  *  - POST /api/rooms/:id/join   {name?, inviteCode?}（邀请链接内部路由；仅房主免邀请码）
@@ -31,19 +33,19 @@
  *  - GET  /api/search?provider=&keywords=&parent=&page= 搜索（同上）
  *  - POST /api/rooms/:id/media  注册媒体（仅房主）。三种形态：
  *      {provider:"direct", name, url}                 直链（校验 http/https、禁带凭证）
- *      {provider:"bilibili", name, bilibili:{bvid,cid,epId?}}  本机解析后的 B 站同步标识
+ *      {provider:"bilibili", url}                     B 站视频（登录用户 + X-Bili-Credential，必需）
  *      {provider:<id>, path} + X-User-Token           房主本人账户的 OpenList provider
  *    自动注册同目录外挂字幕（srt/ass/ssa/vtt）
  *  - GET  /api/rooms/:id/media/:mediaId/grant        签发媒体地址（房间成员；跨房间 404）
- *      B 站：只返回视频标识，由浏览器另行请求本机助手
+ *      B 站：只下发可浏览器直连的 CDN 地址；没有直连节点时明确失败，不使用云端代理
  *      OpenList：解析存储直链后统一下发 /stream 票据（网盘后端不放行 CORS，浏览器无法跨域拉流）
- *  - GET  /api/rooms/:id/media/:mediaId/stream?ticket=  OpenList 流反代（透传 Range/HEAD；不支持 B 站票据）
+ *  - GET  /api/rooms/:id/media/:mediaId/stream?ticket=  仅 OpenList 流反代（透传 Range/HEAD）
  *  - DELETE /api/rooms/:id/media/:mediaId  从播放列表移除（仅房主；删除视频时联动移除同目录自动注册的字幕）
 
  *
  *  - WS   /ws?room=<id>（子协议 sf.token.<memberToken>）  同步房间（凭成员令牌入场）
  *
- * 令牌缓存于内存；OpenList 凭据只存在于服务端；B 站会话只存在于本机助手。
+ * 令牌缓存于内存；OpenList 凭据只存在于服务端；B 站 SESSDATA 不经服务端持久化。
  * 审计日志见 [audit] 行：只含 roomId/mediaId/clientId/动作，不含令牌、签名 URL 或文件路径。
  */
 
@@ -58,11 +60,23 @@ import { RoomManager } from "./sync-rooms.ts";
 import { RoomRegistry, tokenFingerprint } from "./room-auth.ts";
 import type { MediaEntry, MemberRecord } from "./room-auth.ts";
 import { UserAccounts } from "./user-accounts.ts";
+import {
+  BilibiliClient,
+  biliCredentialCookie,
+  credentialFingerprint,
+  getPlayUrlCached,
+  parseBiliCredential,
+  parseVideoId,
+  requireDirectBilibiliPlay,
+  type BiliCredential,
+} from "./bilibili.ts";
+import { fetchNavInfo, pollQrLogin, startQrLogin } from "./bilibili-login.ts";
+import { prepareBiliCredential } from "./bilibili-refresh.ts";
 
 const PORT = Number(process.env.SERVER_PORT ?? 8787);
 
 // P4：账户系统。管理员由环境变量初始化（注册接口已关闭）；
-// OpenList 凭据由各账户在 provider 配置中保存；B 站会话不进入云端。
+// OpenList / Bilibili 凭据不再来自环境变量，全部由各账户在 provider 配置中自行保存。
 // 持久化：账户与房间落盘 DATA_DIR（默认 ./data，Docker 挂卷），重启保留。
 const DATA_DIR = process.env.DATA_DIR ?? "./data";
 const accounts = new UserAccounts(DATA_DIR);
@@ -87,6 +101,18 @@ const registry = new RoomRegistry({  dataDir: DATA_DIR, isAdmin: (username) => a
 
 // 房主私有 OpenList provider 的客户端缓存（凭据不出服务端）。
 const userClients = new Map<string, { client: OpenListClient; baseUrl: string }>();
+
+class BiliAuthRequired extends Error {}
+class BiliUserRequired extends Error {}
+
+function requestBiliCredential(req: IncomingMessage): BiliCredential | null {
+  const raw = req.headers["x-bili-credential"];
+  return typeof raw === "string" ? parseBiliCredential(raw) : null;
+}
+
+function bilibiliClientFor(credential: BiliCredential): BilibiliClient {
+  return new BilibiliClient({ cookie: biliCredentialCookie(credential), buvid3: credential.buvid3 });
+}
 
 async function userOpenListClient(username: string, providerId: string): Promise<{ client: OpenListClient; baseUrl: string } | null> {
   const user = accounts.getUser(username);
@@ -113,7 +139,8 @@ const roomManager = new RoomManager({
 
 /**
  * 全局安全响应头。
- * CSP 阻断内联/第三方脚本，并只允许连接 SyncFrame、HTTPS 与本机助手。
+ * 凭证改为浏览器持有后，XSS 是最大的威胁面：CSP 用于阻断内联/第三方脚本，
+ * 避免 localStorage 中的 B 站完整凭据被注入脚本读走。
  */
 const SECURITY_HEADERS: Record<string, string> = {
   // M3：任何情况下都不向外泄漏本页 URL（含 ?key= 邀请码）。
@@ -123,8 +150,7 @@ const SECURITY_HEADERS: Record<string, string> = {
   "Content-Security-Policy":
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; " +
-    "media-src 'self' blob: https: http://127.0.0.1:* http://localhost:*; " +
-    "connect-src 'self' https: ws: wss: http://127.0.0.1:* http://localhost:*; " +
+    "media-src 'self' blob: https:; connect-src 'self' https: ws: wss:; " +
     "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
 };
 
@@ -268,6 +294,69 @@ function requireRoomOwner(req: IncomingMessage, res: ServerResponse, roomId: str
     return null;
   }
   return username;
+}
+
+// ── Bilibili 扫码与续期：完整凭据只返回当前登录用户的浏览器，服务端不落盘 ──
+
+async function handleBiliQrCode(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!accounts.authenticate(bearerToken(req))) {
+    sendJson(res, 401, { error: "B 站功能仅限 SyncFrame 登录用户", code: "BILI_USER_REQUIRED" });
+    return;
+  }
+  try {
+    const { url, qrcodeKey } = await startQrLogin();
+    sendJson(res, 200, { url, qrcodeKey });
+  } catch (err) {
+    sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function handleBiliQrPoll(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  if (!accounts.authenticate(bearerToken(req))) {
+    sendJson(res, 401, { error: "B 站功能仅限 SyncFrame 登录用户", code: "BILI_USER_REQUIRED" });
+    return;
+  }
+  const qrcodeKey = (url.searchParams.get("qrcodeKey") ?? "").trim();
+  if (!qrcodeKey) {
+    sendJson(res, 400, { error: "缺少 qrcodeKey" });
+    return;
+  }
+  try {
+    const status = await pollQrLogin(qrcodeKey);
+    if (status.status !== "confirmed") {
+      sendJson(res, 200, { status: status.status });
+      return;
+    }
+    sendJson(res, 200, { status: "confirmed", uname: status.uname, credential: status.credential });
+  } catch (err) {
+    sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function handleBiliSession(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!accounts.authenticate(bearerToken(req))) {
+    sendJson(res, 401, { error: "B 站功能仅限 SyncFrame 登录用户", code: "BILI_USER_REQUIRED" });
+    return;
+  }
+  const credential = requestBiliCredential(req);
+  if (!credential) {
+    sendJson(res, 401, { error: "需要本浏览器的 B 站完整凭据", code: "BILI_AUTH_REQUIRED" });
+    return;
+  }
+  let renewed: BiliCredential | null = null;
+  try {
+    const prepared = await prepareBiliCredential(credential, true);
+    renewed = prepared.credential;
+    const uname = await fetchNavInfo(biliCredentialCookie(prepared.credential, true));
+    const current = { ...prepared.credential, uname, lastRefreshCheckAt: Date.now() };
+    sendJson(res, 200, { uname, credential: current });
+  } catch (err) {
+    sendJson(res, 401, {
+      error: err instanceof Error ? err.message : String(err),
+      code: "BILI_AUTH_REQUIRED",
+      ...(renewed ? { biliCredential: renewed } : {}),
+    });
+  }
 }
 
 // ── 账户 / provider 配置 / 管理员 / 公开房间列表 ───────────────────────────
@@ -650,29 +739,48 @@ async function handleRegisterMedia(
     }
     return;
   }
-  // B 站元数据由本机助手解析；云端只接收同步所需的标题与视频标识，不接收凭证或播放地址。
-  if (provider === "bilibili") {
-    const raw = parsed.bilibili;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      sendJson(res, 400, { error: "缺少本机解析后的 bilibili 视频标识" });
+  // B 站只在这里鉴权与解析元数据；完整凭据即用即弃，媒体字节不得经过云端。
+  if (provider === "bilibili" || provider.startsWith("bilibili:")) {
+    const credential = requestBiliCredential(req);
+    if (!credential) {
+      sendJson(res, 401, { error: "请先在本浏览器登录自己的 B 站账号", code: "BILI_AUTH_REQUIRED" });
       return;
     }
-    const ref = raw as Record<string, unknown>;
-    const name = (typeof parsed.name === "string" ? parsed.name.trim() : "").slice(0, 128) || "B 站视频";
-    const result = registry.registerMedia(roomId, member, "", { name, size: 0 }, [], {
-      provider: "哔哩哔哩",
-      bilibili: {
-        bvid: typeof ref.bvid === "string" ? ref.bvid : undefined,
-        cid: Number(ref.cid),
-        aid: ref.aid === undefined ? undefined : Number(ref.aid),
-        epId: ref.epId === undefined ? undefined : Number(ref.epId),
-      },
-    });
-    if ("error" in result) {
-      sendJson(res, 400, { error: result.error });
+    const rawUrl = typeof parsed.url === "string" ? parsed.url : (typeof parsed.bvid === "string" ? parsed.bvid : "");
+    const ref = parseVideoId(rawUrl);
+    if (!ref) {
+      sendJson(res, 400, { error: "无法识别 bilibili 视频（支持 BV 号 / av 号 / 视频或番剧链接 / ep、ss 号）" });
       return;
     }
-    sendJson(res, 200, { mediaId: result.mediaId, name, size: 0, related: result.related, provider: "哔哩哔哩" });
+    let prepared: Awaited<ReturnType<typeof prepareBiliCredential>> | null = null;
+    try {
+      prepared = await prepareBiliCredential(credential);
+      const bc = bilibiliClientFor(prepared.credential);
+      const info = ref.epId || ref.seasonId
+        ? await bc.getBangumiInfo({ epId: ref.epId, seasonId: ref.seasonId })
+        : await bc.getVideoInfo(ref);
+      const result = registry.registerMedia(roomId, member, "", { name: info.title, size: 0 }, [], {
+        provider: "哔哩哔哩",
+        bilibili: { bvid: info.bvid, cid: info.cid, aid: info.aid, epId: info.epId },
+      });
+      if ("error" in result) {
+        sendJson(res, 403, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, {
+        mediaId: result.mediaId,
+        name: info.title,
+        size: 0,
+        related: result.related,
+        provider: "哔哩哔哩",
+        ...(prepared.changed ? { biliCredential: prepared.credential } : {}),
+      });
+    } catch (err) {
+      sendJson(res, 502, {
+        error: err instanceof Error ? err.message : String(err),
+        ...(prepared?.changed ? { biliCredential: prepared.credential } : {}),
+      });
+    }
     return;
   }
   const filePath = typeof parsed.path === "string" ? parsed.path : "";
@@ -738,7 +846,7 @@ async function handleDeleteMedia(req: IncomingMessage, res: ServerResponse, room
   sendJson(res, 200, { ok: true });
 }
 
-// ── OpenList 播放地址解析（B 站播放完全由本机助手负责）────────────────────
+// ── Bilibili 播放地址解析（凭证请求内即用即弃）────────────────────────────
 
 /** 为上游地址签发短时票据，返回浏览器可用的 /stream 反代地址。 */
 function issueStreamUrl(
@@ -765,6 +873,26 @@ function issueStreamUrl(
   return `/api/rooms/${encodeURIComponent(roomId)}/media/${encodeURIComponent(mediaId)}/stream?ticket=${encodeURIComponent(ticket)}`;
 }
 
+/**
+ * 解析 B 站播放地址。完整凭据只在本请求内使用，解析完即丢弃。
+ * 只下发浏览器可直连的 CDN 地址；没有可用节点时失败，绝不签发云端反代票据。
+ */
+async function resolveBilibiliMedia(entry: MediaEntry, credential: BiliCredential) {
+  const play = await getPlayUrlCached(
+    bilibiliClientFor(credential),
+    { bvid: entry.bilibili!.bvid, cid: entry.bilibili!.cid, epId: entry.bilibili!.epId },
+    credentialFingerprint(biliCredentialCookie(credential, true)),
+  );
+  const direct = requireDirectBilibiliPlay(play);
+  return {
+    url: direct.url,
+    audioUrl: direct.audioUrl,
+    direct: true,
+    name: entry.name,
+    size: 0,
+  };
+}
+
 async function handleGrant(
   req: IncomingMessage,
   res: ServerResponse,
@@ -776,15 +904,17 @@ async function handleGrant(
     sendJson(res, 401, { error: "成员令牌无效或已过期" });
     return;
   }
+  const credential = requestBiliCredential(req);
+  let prepared: Awaited<ReturnType<typeof prepareBiliCredential>> | null = null;
   try {
+    prepared = registry.isBilibiliMedia(roomId, mediaId) && credential && member.kind === "user"
+      ? await prepareBiliCredential(credential)
+      : null;
     const grant = await registry.grant(roomId, mediaId, member, (entry) => {
       if (entry.bilibili) {
-        return Promise.resolve({
-          url: "",
-          name: entry.name,
-          size: 0,
-          bilibili: entry.bilibili,
-        });
+        if (member.kind !== "user") throw new BiliUserRequired("B 站视频仅限 SyncFrame 登录用户观看");
+        if (!prepared) throw new BiliAuthRequired("请先在本浏览器登录自己的 B 站账号");
+        return resolveBilibiliMedia(entry, prepared.credential);
       }
       // OpenList provider：用注册者（房间创建者）的凭据解析（凭据不出服务端）。
       if (entry.providerOwner && entry.providerId) {
@@ -792,7 +922,7 @@ async function handleGrant(
           if (!ol) throw new Error("provider 不可用");
           const resolved = await resolveWithClient(ol.client, ol.baseUrl, entry.path, req.headers["user-agent"] ?? "SyncFrame-PoC/0.1");
           // 跨域修复：网盘存储后端不对浏览器放行 CORS，movi-player 的 fetch/Range 拉流会被拦截。
-          // 走 /stream 票据反代（票据绑定已解析的上游地址，Range/HEAD 透传），
+          // OpenList 走 /stream 票据反代（票据绑定已解析的上游地址，Range/HEAD 透传），
           // 带 OpenList 源站 Referer（部分存储防盗链校验）与播放端 UA（部分存储按 UA 校验）。
           const streamUrl = issueStreamUrl(roomId, mediaId, member, "video", resolved.url, {
             kind: "openlist",
@@ -804,19 +934,29 @@ async function handleGrant(
         });
       }
       throw new Error("媒体来源 provider 不可用");
-    });
+    }, prepared ? credentialFingerprint(biliCredentialCookie(prepared.credential, true)) : "anonymous");
     if (!grant) {
       // 跨房间/未注册 mediaId：404，不暴露存在性（P3 通过门槛：不能越权访问其他媒体）。
       sendJson(res, 404, { error: "媒体不存在或未授权" });
       return;
     }
-    sendJson(res, 200, grant);
+    sendJson(res, 200, {
+      ...grant,
+      ...(prepared?.changed ? { biliCredential: prepared.credential } : {}),
+    });
   } catch (err) {
-    sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+    const renewed = prepared?.changed ? { biliCredential: prepared.credential } : {};
+    if (err instanceof BiliUserRequired) {
+      sendJson(res, 403, { error: err.message, code: "BILI_USER_REQUIRED", ...renewed });
+    } else if (err instanceof BiliAuthRequired) {
+      sendJson(res, 401, { error: err.message, code: "BILI_AUTH_REQUIRED", ...renewed });
+    } else {
+      sendJson(res, 502, { error: err instanceof Error ? err.message : String(err), ...renewed });
+    }
   }
 }
 
-// ── OpenList 流反代：网盘存储的跨域与防盗链由服务端处理；B 站流量不进入这里 ──
+// ── OpenList 流反代：B 站不进入此路径，也不签发云端媒体票据 ──
 
 /** OpenList 反代的扩展名 → MIME（上游未给 Content-Type 时兜底用）。 */
 const OPENLIST_STREAM_MIME: Record<string, string> = {
@@ -904,7 +1044,7 @@ async function handleStream(
   }
   try {
     const range = req.headers.range;
-    // OpenList 存储后端按源站 Referer 防盗链，UA 与播放端保持一致。
+    // 仅 OpenList 使用云端反代；B 站不会签发票据或进入此路径。
     const upstreamHeaders: Record<string, string> = {
       "User-Agent": t.userAgent ?? "SyncFrame-PoC/0.1",
       ...(t.referer ? { Referer: t.referer } : {}),
@@ -1063,7 +1203,7 @@ function clientIp(req: IncomingMessage): string {
 const STREAM_TICKET_TTL_MS = 12 * 60 * 60 * 1000;
 
 interface StreamTicket {
-  /** 仅 OpenList：上游是网盘存储直链；B 站不使用云端票据或流代理。 */
+  /** 仅 OpenList 使用云端票据；B 站只允许浏览器直连 CDN。 */
   kind: "openlist";
   roomId: string;
   mediaId: string;
@@ -1162,7 +1302,7 @@ const server = createServer(async (req, res) => {
     } else if (url.pathname === "/api/rooms" && req.method === "POST") {
       await handleCreateRoom(req, res, await readBody(req));
     } else if (url.pathname === "/api/rooms" && req.method === "GET") {
-      // 大厅摘要：内部短 ID、房主昵称、人数、视频数、邀请码策略及当前用户权限。
+      // 大厅摘要：内部 GUID、房主昵称、人数、视频数、邀请码策略及当前用户权限。
       // 可选 Bearer userToken：登录后标记自己创建的房间，大厅据此展示「删除」按钮。
       const viewer = accounts.authenticate(bearerToken(req));
       // 在线人数以内存同步房间为准：注册表成员记录保留 12h（令牌有效期内可重连），
@@ -1179,6 +1319,12 @@ const server = createServer(async (req, res) => {
         return;
       }
       await handleLogin(req, res, await readBody(req));
+    } else if (url.pathname === "/api/bilibili/login/qrcode" && req.method === "GET") {
+      await handleBiliQrCode(req, res);
+    } else if (url.pathname === "/api/bilibili/login/poll" && req.method === "GET") {
+      await handleBiliQrPoll(req, res, url);
+    } else if (url.pathname === "/api/bilibili/session" && req.method === "POST") {
+      await handleBiliSession(req, res);
     } else if (url.pathname === "/api/me" && req.method === "GET") {
       handleMe(req, res);
     } else if (url.pathname === "/api/me/providers" && req.method === "PUT") {
@@ -1295,7 +1441,7 @@ server.listen(PORT, () => {
   console.log(`  GET  /api/rooms | POST /api/rooms（需登录）| /api/rooms/:id/join   （房间列表 + 房间鉴权）`);
   console.log(`  GET  /api/browse?room=&provider= | /api/search?provider=&keywords=   （房主本人媒体库）`);
   console.log(`  POST /api/rooms/:id/media | GET .../media/:mediaId/grant   （受控映射 + 媒体地址）`);
-  console.log(`  POST media {provider:"bilibili", name, bilibili}  （仅同步标识；登录/解析/播放走本机助手）`);
-  console.log(`  GET  .../media/:mediaId/stream?ticket=   （仅 OpenList 存储反代，Range/HEAD 透传）`);
+  console.log(`  POST media {provider:"bilibili", url}  登录用户 + X-Bili-Credential（必需，自动续期，仅 CDN 直连）`);
+  console.log(`  GET  .../media/:mediaId/stream?ticket=   （仅 OpenList 存储反代；B 站不使用云端代理）`);
   console.log(`  WS   /ws?room=<id>（子协议 sf.token.*）   （凭成员令牌入场）`);
 });

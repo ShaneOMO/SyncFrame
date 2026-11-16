@@ -1,6 +1,6 @@
 /**
  * 账户设置页（React 版，行为对齐旧 settings-main.ts）：
- * - 视频 Provider 管理：OpenList 增删（全量替换）、B 站本机会话 + 扫码登录；
+ * - 视频 Provider 管理：OpenList 增删（全量替换）、B 站凭证（本浏览器）+ 扫码绑定；
  * - 管理员「用户管理」：账户表 / 创建 / 重置密码 / 删除；
  * - 页签走 URL hash（#providers / #users），大厅管理员入口 #users 直达不变。
  */
@@ -47,14 +47,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  BiliLocalError,
-  clearLocalBiliSession,
-  getLocalBiliStatus,
-  pollLocalBiliLogin,
-  startLocalBiliLogin,
-  validateLocalBiliSession,
-  type LocalBiliStatus,
-} from "@/bili-local.ts";
+  biliCredentialHeaders,
+  clearBiliCredential,
+  loadBiliCredential,
+  saveBiliCredential,
+  type BiliCredential,
+} from "@/bili-credential.ts";
 import { loadUser as loadLocalUser, clearUser, type LocalUser } from "@/lib/user.ts";
 
 interface PublicProvider {
@@ -100,7 +98,7 @@ function SettingsPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [qrStatus, setQrStatus] = useState("");
   const [qrVisible, setQrVisible] = useState(false);
-  const [biliStatus, setBiliStatus] = useState<LocalBiliStatus>({ available: false, authenticated: false, uname: "" });
+  const [biliCredential, setBiliCredential] = useState<BiliCredential | null>(loadBiliCredential);
   const qrPollTimer = useRef<number | null>(null);
 
   // 删除/重置确认
@@ -138,6 +136,7 @@ function SettingsPage() {
       setMe(m);
       setIsAdmin(m.role === "admin");
       syncTab(m.role === "admin");
+      void validateBiliSession();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -204,7 +203,7 @@ function SettingsPage() {
 
   const onAddProvider = async (): Promise<void> => {
     if (kind === "bilibili") {
-      toast("B 站会话由本机助手统一保存，不用添加 provider：直接扫码登录即可");
+      toast("B 站凭证只存在本浏览器，不用添加：直接点「扫码绑定 B 站」");
       return;
     }
     const baseUrl = pBaseUrl.trim();
@@ -226,40 +225,30 @@ function SettingsPage() {
     }
   };
 
-  // ── B 站本机扫码与会话 ───────────────────────────────
+  // ── B 站扫码与自动续期 ───────────────────────────────
 
-  const refreshBiliStatus = async (validate = true): Promise<void> => {
+  const validateBiliSession = async (): Promise<void> => {
+    if (!loadBiliCredential()) return;
+    setQrStatus("正在检查 B 站会话并按需续期…");
     try {
-      const status = await getLocalBiliStatus();
-      setBiliStatus(status);
-      if (status.authenticated && validate) {
-        try {
-          setBiliStatus(await validateLocalBiliSession());
-        } catch (err) {
-          if (err instanceof BiliLocalError && err.status === 401) {
-            setBiliStatus({ available: true, authenticated: false, uname: "" });
-          }
-          setQrStatus(err instanceof Error ? err.message : String(err));
+      const res = await fetch("/api/bilibili/session", {
+        method: "POST",
+        headers: { ...authHeaders(), ...biliCredentialHeaders() },
+      });
+      const body = (await res.json().catch(() => ({}))) as { credential?: unknown; biliCredential?: unknown; error?: string };
+      if (!res.ok || !body.credential) {
+        if (body.biliCredential) {
+          const renewed = saveBiliCredential(body.biliCredential);
+          if (renewed) setBiliCredential(renewed);
         }
+        setQrStatus(body.error ?? `B 站会话检查失败 HTTP ${res.status}`);
+        return;
       }
+      const saved = saveBiliCredential(body.credential);
+      if (saved) setBiliCredential(saved);
+      setQrStatus(`B 站会话有效${saved?.uname ? `：${saved.uname}` : ""}，已自动检查续期`);
     } catch (err) {
-      setBiliStatus({ available: false, authenticated: false, uname: "" });
       setQrStatus(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  useEffect(() => {
-    void refreshBiliStatus();
-  }, []);
-
-  const clearBiliLogin = async (): Promise<void> => {
-    try {
-      await clearLocalBiliSession();
-      setBiliStatus({ available: true, authenticated: false, uname: "" });
-      setQrStatus("已退出本机 B 站账号");
-      toast("本机 B 站会话已清除");
-    } catch (err) {
-      toast(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -274,7 +263,20 @@ function SettingsPage() {
 
   const pollBiliQr = async (qrcodeKey: string): Promise<void> => {
     try {
-      const body = await pollLocalBiliLogin(qrcodeKey);
+      const res = await fetch(`/api/bilibili/login/poll?qrcodeKey=${encodeURIComponent(qrcodeKey)}`, {
+        headers: authHeaders(),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        status?: string;
+        uname?: string;
+        credential?: unknown;
+        error?: string;
+      };
+      if (!res.ok) {
+        stopQrPolling();
+        setQrStatus(body.error ?? `登录失败 HTTP ${res.status}`);
+        return;
+      }
       if (body.status === "scanned") {
         setQrStatus("已扫码，请在手机上确认登录…");
       } else if (body.status === "expired") {
@@ -283,10 +285,18 @@ function SettingsPage() {
       } else if (body.status === "confirmed") {
         stopQrPolling();
         setQrVisible(false);
-        setBiliStatus({ available: true, authenticated: true, uname: body.uname ?? "" });
-        setQrStatus(`登录成功${body.uname ? `：${body.uname}` : ""}，会话已由本机助手保存`);
-        toast("B 站账号已登录本机助手，云端不保存会话");
+        const saved = saveBiliCredential(body.credential);
+        if (!saved) {
+          setQrStatus("登录已确认，但完整凭据保存失败（浏览器存储不可用或响应不完整）");
+          return;
+        }
+        setBiliCredential(saved);
+        setQrStatus(`登录成功${body.uname ? `：${body.uname}` : ""}，完整凭据已保存在本浏览器，后续自动续期`);
+        toast("B 站账号已登录本浏览器（服务器不保存）");
+        const m = await fetchMe();
+        if (m) setMe(m);
       }
+      // waiting：保持轮询。
     } catch {
       /* 单次轮询失败忽略，下轮重试。 */
     }
@@ -297,19 +307,24 @@ function SettingsPage() {
     setQrVisible(false);
     setQrStatus("正在获取二维码…");
     try {
-      const body = await startLocalBiliLogin();
+      const res = await fetch("/api/bilibili/login/qrcode", { headers: authHeaders() });
+      const body = (await res.json().catch(() => ({}))) as { url?: string; qrcodeKey?: string; error?: string };
+      if (!res.ok || !body.url || !body.qrcodeKey) {
+        setQrStatus(body.error ?? `获取二维码失败 HTTP ${res.status}`);
+        return;
+      }
       const { toCanvas } = await import("qrcode");
       if (!canvasRef.current) return;
       await toCanvas(canvasRef.current, body.url, { width: 180, margin: 1 });
       setQrVisible(true);
       setQrStatus("请用哔哩哔哩 App 扫码并确认登录");
-      qrPollTimer.current = window.setInterval(() => void pollBiliQr(body.qrcodeKey), 2000);
+      qrPollTimer.current = window.setInterval(() => void pollBiliQr(body.qrcodeKey!), 2000);
     } catch (err) {
       setQrStatus(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const biliBound = biliStatus.authenticated;
+  const biliBound = biliCredential !== null;
 
   // ── 管理员动作 ───────────────────────────────────────
 
@@ -435,7 +450,7 @@ function SettingsPage() {
               <div className="mb-6">
                 <h1 className="mb-2 text-xl font-bold tracking-tight">视频源</h1>
                 <p className="text-sm leading-7 text-muted-foreground">
-                  管理你的 OpenList 网盘。B 站登录、解析和播放均在本机完成，云端只负责同步。
+                  管理你的 OpenList 网盘。B 站凭证只存在本浏览器，服务器不保存。
                 </p>
               </div>
 
@@ -453,15 +468,22 @@ function SettingsPage() {
                       <CardHeader className="pb-2">
                         <CardTitle className="flex items-center gap-2 text-sm">
                           <Badge variant="outline" className="rounded-full text-[11px] font-normal">哔哩哔哩</Badge>
-                          <b className="truncate">{biliStatus.uname || "本机已登录"}</b>
+                          <b className="truncate">{biliCredential?.uname || "本浏览器已登录"}</b>
                         </CardTitle>
-                        <CardDescription>会话只存在本机助手，云端不保存</CardDescription>
+                        <CardDescription>凭证只存在本浏览器，服务器不保存</CardDescription>
                       </CardHeader>
                       <CardContent>
                         <Button
                           size="sm"
                           variant="destructive"
-                          onClick={() => void clearBiliLogin()}
+                          onClick={() => {
+                            clearBiliCredential();
+                            setBiliCredential(null);
+                            void fetchMe().then((m) => {
+                              if (m) setMe(m);
+                            });
+                            toast("已清除本浏览器的 B 站凭证");
+                          }}
                         >
                           清除
                         </Button>
@@ -506,7 +528,7 @@ function SettingsPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="openlist">OpenList（自建网盘）</SelectItem>
-                      <SelectItem value="bilibili">哔哩哔哩（本机助手）</SelectItem>
+                      <SelectItem value="bilibili">哔哩哔哩（凭证存本浏览器）</SelectItem>
                     </SelectContent>
                   </Select>
 
@@ -543,23 +565,32 @@ function SettingsPage() {
                     <div className="flex flex-col gap-3">
                       <p className="text-xs leading-6 break-words text-muted-foreground">
                         {biliBound
-                          ? `本机已登录${biliStatus.uname ? `：${biliStatus.uname}` : ""}。所有房间、标签页和 SyncFrame 账户复用此会话，直到 B 站会话失效或主动退出。`
-                          : biliStatus.available
-                            ? "本机助手已运行。B 站视频必须扫码登录，不提供匿名播放。"
-                            : "未连接本机助手。请在 syncframe-poc 目录运行 npm run p1:local，然后点「重新检测」。"}
+                          ? `本浏览器已登录${biliCredential?.uname ? `：${biliCredential.uname}` : ""}。完整凭据仅保存在这里，播放前自动检查并续期，不会共享给其他成员。`
+                          : "B 站功能仅限 SyncFrame 登录用户。扫码后保存完整凭据并自动续期，不提供匿名播放。"}
                       </p>
                       <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" disabled={!biliStatus.available} onClick={() => void startBiliQrLogin()}>
+                        <Button variant="outline" onClick={() => void startBiliQrLogin()}>
                           {biliBound ? "重新扫码登录" : "扫码登录 B 站"}
                         </Button>
-                        <Button variant="outline" onClick={() => void refreshBiliStatus()}>
-                          重新检测
-                        </Button>
                         {biliBound && (
-                          <Button variant="outline" onClick={() => void clearBiliLogin()}>
-                            退出本机 B 站账号
+                          <Button variant="outline" onClick={() => void validateBiliSession()}>
+                            检查并续期
                           </Button>
                         )}
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            clearBiliCredential();
+                            setBiliCredential(null);
+                            void fetchMe().then((m) => {
+                              if (m) setMe(m);
+                            });
+                            setQrStatus("已清除本浏览器的 B 站凭证");
+                            toast("已清除本浏览器的 B 站凭证");
+                          }}
+                        >
+                          清除本浏览器凭证
+                        </Button>
                       </div>
                       <canvas ref={canvasRef} width={180} height={180} className={qrVisible ? "" : "hidden"} />
                       <p className="min-h-4 text-xs text-muted-foreground">{qrStatus}</p>
