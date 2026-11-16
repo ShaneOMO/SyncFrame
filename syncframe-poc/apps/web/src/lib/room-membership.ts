@@ -94,7 +94,7 @@ export function storeJoinResponse(roomId: string, value: unknown, inviteCode = "
 }
 
 interface JoinOptions {
-  roomId: string;
+  roomId?: string;
   account: LocalUser | null;
   inviteCode?: string;
   guestName?: string;
@@ -104,7 +104,10 @@ const pendingJoins = new Map<string, Promise<RoomSession>>();
 
 async function requestJoin(options: JoinOptions): Promise<RoomSession> {
   const inviteCode = options.inviteCode?.trim() ?? "";
-  const response = await fetch(`/api/rooms/${encodeURIComponent(options.roomId)}/join`, {
+  const url = options.roomId
+    ? `/api/rooms/${encodeURIComponent(options.roomId)}/join`
+    : "/api/rooms/join";
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -116,7 +119,8 @@ async function requestJoin(options: JoinOptions): Promise<RoomSession> {
     }),
   });
   if (!response.ok) throw await errorFrom(response);
-  return storeJoinResponse(options.roomId, await response.json(), inviteCode);
+  const data = (await response.json()) as SessionResponse;
+  return storeJoinResponse(options.roomId ?? data.roomId, data, inviteCode);
 }
 
 export function joinRoom(options: JoinOptions): Promise<RoomSession> {

@@ -1,7 +1,7 @@
 /**
  * 大厅页：
  * - 房间列表：GET /api/rooms，15s 轮询刷新；行右侧「直接加入」预填加入弹窗；
- * - 「创建房间 / 加入房间」弹窗；创建需登录，房间名必填，可自定义房间号/访问码；
+ * - 「创建房间 / 加入房间」弹窗；创建需登录，房间名必填，可设置全实例唯一邀请码；
  * - 右上角用户按钮：未登录 → 登录弹窗；已登录 → 跳转设置页；管理员额外有「用户管理」；
  * - 邀请链接 ?room=<id>&key=<code> 自动加入；成员令牌写入 sessionStorage 后跳房间页。
  */
@@ -31,6 +31,7 @@ interface RoomSummary {
   memberCount: number;
   mediaCount: number;
   hasInvite: boolean;
+  owned: boolean;
   deletable: boolean;
 }
 
@@ -124,7 +125,7 @@ function LobbyPage() {
     void refreshRoomList();
     const timer = window.setInterval(() => void refreshRoomList(), 15_000);
     return () => window.clearInterval(timer);
-  }, [refreshRoomList]);
+  }, [refreshRoomList, user]);
 
   const [deleteTarget, setDeleteTarget] = useState<RoomSummary | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -142,7 +143,7 @@ function LobbyPage() {
         toast(`删除失败：${body.error ?? `HTTP ${res.status}`}`);
         return;
       }
-      toast(`房间「${deleteTarget.roomId}」已移除`);
+      toast(`房间「${deleteTarget.roomName}」已移除`);
       await refreshRoomList();
     } catch (err) {
       toast(`删除失败：${err instanceof Error ? err.message : err}`);
@@ -155,7 +156,6 @@ function LobbyPage() {
   // ── 创建房间弹窗 ──────────────────────────────────────
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
-  const [createRoomId, setCreateRoomId] = useState("");
   const [createHasInvite, setCreateHasInvite] = useState(true);
   const [createInvite, setCreateInvite] = useState("");
   const [createErr, setCreateErr] = useState("");
@@ -186,7 +186,7 @@ function LobbyPage() {
     try {
       const data = await postJson(
         "/api/rooms",
-        { name, roomId: createRoomId.trim(), inviteCode: createInvite.trim(), noInvite: !createHasInvite },
+        { name, inviteCode: createInvite.trim(), noInvite: !createHasInvite },
         user.token,
       );
       const newRoomId = String(data.roomId);
@@ -203,35 +203,43 @@ function LobbyPage() {
 
   // ── 加入房间弹窗 ──────────────────────────────────────
   const [joinOpen, setJoinOpen] = useState(false);
-  const [joinRoom, setJoinRoom] = useState(params.get("room") ?? "");
+  const [joinRoomId, setJoinRoomId] = useState(params.get("room") ?? "");
   const [joinCode, setJoinCode] = useState("");
   const [joinName, setJoinName] = useState("");
   const [joinErr, setJoinErr] = useState("");
   const [joinBusy, setJoinBusy] = useState(false);
   const joinBtnRef = useRef<HTMLButtonElement>(null);
 
-  const openJoin = (roomId?: string) => {
+  const openJoin = (room?: RoomSummary) => {
     setJoinErr("");
-    if (roomId !== undefined) setJoinRoom(roomId);
+    setJoinCode("");
+    setJoinRoomId(room?.roomId ?? "");
+    if (room && (room.owned || !room.hasInvite)) {
+      setJoinOpen(false);
+      void doJoin(room.roomId, "", "");
+      return;
+    }
     setJoinOpen(true);
   };
 
   const doJoin = async (roomIdRaw: string, codeRaw: string, nameRaw: string) => {
     setJoinErr("");
     const roomId = roomIdRaw.trim().toLowerCase();
-    if (!roomId) {
-      setJoinErr("请填写房间号");
+    const code = codeRaw.trim().toUpperCase();
+    if (!roomId && !code) {
+      setJoinErr("请输入邀请码");
+      setJoinOpen(true);
       return;
     }
     setJoinBusy(true);
     try {
-      await joinRoomMembership({
-        roomId,
+      const session = await joinRoomMembership({
+        ...(roomId ? { roomId } : {}),
         account: userRef.current,
-        inviteCode: codeRaw.trim().toUpperCase(),
+        inviteCode: code,
         guestName: nameRaw,
       });
-      enterRoom(roomId);
+      enterRoom(session.roomId);
     } catch (err) {
       if (err instanceof AccountExpiredError) {
         clearUser();
@@ -239,12 +247,13 @@ function LobbyPage() {
         setIsAdmin(false);
       }
       setJoinErr(`加入失败：${err instanceof Error ? err.message : String(err)}`);
+      setJoinOpen(true);
     } finally {
       setJoinBusy(false);
     }
   };
 
-  const submitJoin = () => void doJoin(joinRoom, joinCode, joinName);
+  const submitJoin = () => void doJoin(joinRoomId, joinCode, joinName);
 
   useEffect(() => {
     if (!authReady) return;
@@ -252,15 +261,14 @@ function LobbyPage() {
     if (!linkRoom) return;
     const code = linkKey ?? loadInviteCode(linkRoom);
     const linkName = params.get("name") ?? "";
-    setJoinRoom(linkRoom);
+    setJoinRoomId(linkRoom);
     setJoinCode(code);
     setJoinName(linkName);
-    setJoinOpen(true);
     if (authFailureRef.current) {
       setJoinErr(authFailureRef.current);
+      setJoinOpen(true);
       return;
     }
-    if (!linkKey && !userRef.current) return;
     const timer = window.setTimeout(() => void doJoin(linkRoom, code, linkName), 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -319,7 +327,7 @@ function LobbyPage() {
                 {rooms !== null && rooms.length > 0 ? `${rooms.length} 个房间` : ""}
               </span>
             </CardTitle>
-            <CardDescription>正在同步观影的房间。点「立即加入」即可进房；游客点开房主分享的链接可免输入直接进。</CardDescription>
+            <CardDescription>公开房间可直接进入；设有邀请码的房间需要输入邀请码。房主进入自己的房间无需填写。</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="overflow-hidden rounded-lg border">
@@ -345,7 +353,7 @@ function LobbyPage() {
                       {r.memberCount} 人在线 · {r.mediaCount} 个视频
                     </span>
                     <div className="flex items-center gap-2">
-                      <Button size="sm" onClick={() => openJoin(r.roomId)}>
+                      <Button size="sm" onClick={() => openJoin(r)}>
                         <Play className="size-3.5" />
                         立即加入
                       </Button>
@@ -444,22 +452,9 @@ function LobbyPage() {
                 onChange={(e) => setCreateName(e.target.value)}
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="create-roomid">
-                房间号 <span className="font-normal text-muted-foreground">（可选，3-24 位字母/数字/连字符）</span>
-              </Label>
-              <Input
-                id="create-roomid"
-                maxLength={24}
-                placeholder="留空则自动生成"
-                autoComplete="off"
-                value={createRoomId}
-                onChange={(e) => setCreateRoomId(e.target.value)}
-              />
-            </div>
             <label className="flex cursor-pointer items-center gap-2 text-sm select-none">
               <Checkbox checked={createHasInvite} onCheckedChange={(v) => setCreateHasInvite(v === true)} />
-              生成游客访问码 <span className="text-muted-foreground">（登录成员凭账户身份加入）</span>
+              设置邀请码 <span className="text-muted-foreground">（关闭后任何人都可以直接进入）</span>
             </label>
             {createHasInvite && (
               <div className="space-y-2">
@@ -493,24 +488,11 @@ function LobbyPage() {
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <DialogTitle>加入房间</DialogTitle>
-            <DialogDescription>一般点房主发的链接就能直接进房，这里也可以手动输入房间号和访问码。</DialogDescription>
+            <DialogDescription>输入房主提供的邀请码即可加入；也可以从房间列表直接进入公开房间。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="join-room">房间号</Label>
-              <Input
-                id="join-room"
-                maxLength={24}
-                placeholder="例如：movie-night"
-                autoComplete="off"
-                value={joinRoom}
-                onChange={(e) => setJoinRoom(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="join-code">
-                游客访问码 <span className="font-normal text-muted-foreground">（登录成员无需填写）</span>
-              </Label>
+              <Label htmlFor="join-code">邀请码</Label>
               <Input
                 id="join-code"
                 maxLength={16}

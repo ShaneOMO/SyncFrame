@@ -212,10 +212,9 @@ function RoomPage() {
             <Pencil className="size-3" />
           </Button>
         )}
-        <Badge variant="outline" className="rounded-full font-mono text-xs">
-          {room.roomId}
-          {room.mode === "clock" ? " · clock" : ""}
-        </Badge>
+        {room.mode === "clock" && (
+          <Badge variant="outline" className="rounded-full font-mono text-xs">clock</Badge>
+        )}
         <Badge variant={isHost ? "default" : "secondary"} className="rounded-full text-xs">
           {room.name} · {isHost ? "房主" : room.session.kind === "user" ? "登录成员" : "游客"}
         </Badge>
@@ -417,7 +416,7 @@ function RoomPage() {
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <DialogTitle>修改房间名</DialogTitle>
-            <DialogDescription>只是换个显示名，房间号和访问码不受影响。</DialogDescription>
+            <DialogDescription>只是换个显示名，内部房间标识和邀请码不受影响。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">

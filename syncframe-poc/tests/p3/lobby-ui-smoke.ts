@@ -9,7 +9,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { chromium, type Page } from "playwright-core";
 import { startOpenListStub } from "./openlist-stub.ts";
-import { ADMIN_PASS, ADMIN_USER, createUserAsAdmin, loginUser, repoRoot } from "./room-api.ts";
+import { ADMIN_PASS, ADMIN_USER, createUserAsAdmin, loginUser, postJson, repoRoot } from "./room-api.ts";
 
 const BACKEND_PORT = 8940;
 const STUB_PORT = 8941;
@@ -133,10 +133,11 @@ async function main(): Promise<void> {
     await host.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
     const roomUrl = new URL(host.url());
     const roomId = roomUrl.searchParams.get("room") ?? "";
-    check("创建后跳转房间页", roomUrl.pathname === "/room.html" && roomId.length === 6, `roomId=${roomId}`);
+    check("创建后跳转房间页", roomUrl.pathname === "/room.html" && /^[0-9a-f-]{36}$/.test(roomId), `roomId=${roomId}`);
     await waitSyncRole(host, "host");
     check("房主 WS 已连接", true);
     check("房主显示账户名而不是房间名", (await host.locator("body").innerText()).includes(`${ADMIN_USER} · 房主`));
+    check("内部 GUID 不在房间界面展示", !(await host.locator("body").innerText()).includes(roomId));
     const invite = await host.evaluate(() => sessionStorage.getItem(`syncframe-invite-${new URL(location.href).searchParams.get("room")}`) ?? "");
     check("邀请码已存会话（8 位）", /^[A-Z2-9]{8}$/.test(invite), invite);
 
@@ -183,6 +184,8 @@ async function main(): Promise<void> {
     await member.locator("div.border-b", { hasText: "UI房间" }).getByRole("button", { name: "立即加入" }).click();
     const memberJoin = member.getByRole("dialog");
     check("登录成员加入时锁定账户身份", await memberJoin.getByLabel("登录身份").isDisabled());
+    check("加入表单不包含房间号", (await memberJoin.locator("#join-room").count()) === 0);
+    await memberJoin.getByLabel("邀请码").fill(invite);
     await memberJoin.getByRole("button", { name: "加入房间" }).click();
     await member.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
     await waitSyncRole(member, "viewer");
@@ -207,6 +210,24 @@ async function main(): Promise<void> {
     check("观众同步收到 mediaId", String(await viewerMedia.jsonValue()).startsWith("m_"));
     await viewer.getByText(/^就绪/).first().waitFor({ timeout: 10_000 });
     check("观众媒体徽标就绪", true);
+
+    // ── 场景 5：公开房间和房主本人加入均不弹窗 ─────────
+    const backend = `http://localhost:${BACKEND_PORT}`;
+    const publicRoom = await postJson(backend, "/api/rooms", { name: "公开房间", noInvite: true }, adminToken);
+    check("创建无邀请码公开房间", publicRoom.status === 200);
+    const ctx4 = await browser.newContext();
+    const publicGuest = await ctx4.newPage();
+    await publicGuest.goto(`${WEB}/lobby.html`, { waitUntil: "domcontentloaded" });
+    await publicGuest.locator("div.border-b", { hasText: "公开房间" }).getByRole("button", { name: "立即加入" }).click();
+    await publicGuest.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
+    await waitSyncRole(publicGuest, "viewer");
+    check("公开房间直接进入且不弹窗", (await publicGuest.getByRole("dialog").count()) === 0);
+
+    await host.goto(`${WEB}/lobby.html`, { waitUntil: "domcontentloaded" });
+    await host.locator("div.border-b", { hasText: "UI房间" }).getByRole("button", { name: "立即加入" }).click();
+    await host.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
+    await waitSyncRole(host, "host");
+    check("房主重新加入无需邀请码或弹窗", (await host.getByRole("dialog").count()) === 0);
 
     console.log(failures === 0 ? "\n大厅 UI 冒烟通过 ✔" : `\n${failures} 项失败 ✘`);
     process.exitCode = failures === 0 ? 0 : 1;

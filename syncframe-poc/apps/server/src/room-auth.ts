@@ -85,7 +85,7 @@ export interface RoomRecord {
   roomId: string;
   /** 房间名（展示用，与房主昵称解耦；房主可改）。 */
   roomName: string;
-  /** 访问码（邀请码）：null 表示创建时选择不生成，任何人凭房间号即可加入。 */
+  /** 邀请码：null 表示公开房间，任何用户都可直接进入。 */
   inviteCode: string | null;
   createdAt: number;
   /** 最近一次成员活动（加入/授权）：注册表清扫据此判断闲置。 */
@@ -263,32 +263,36 @@ export class RoomRegistry {
     return this.rooms.get(roomId);
   }
 
-  /** 自定义房间号/邀请码的合法形态（让用户可以长期固定使用同一个房间）。 */
-  static readonly ROOM_ID_RE = /^[a-z0-9][a-z0-9_-]{2,23}$/;
   static readonly INVITE_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9-]{3,15}$/;
 
-  createRoom(hostUser: string, opts: { roomId?: string; inviteCode?: string; noInvite?: boolean; roomName?: string } = {}): {
+  private unusedInviteCode(): string {
+    let code = makeInviteCode();
+    while (this.roomIdForInvite(code)) code = makeInviteCode();
+    return code;
+  }
+
+  roomIdForInvite(inviteCode: string): string | null {
+    const code = inviteCode.trim().toUpperCase();
+    if (!code) return null;
+    return [...this.rooms.values()].find((room) => room.inviteCode === code)?.roomId ?? null;
+  }
+
+  createRoom(hostUser: string, opts: { inviteCode?: string; noInvite?: boolean; roomName?: string } = {}): {
     room: RoomRecord;
     member: MemberRecord;
   } {
     const username = hostUser.trim();
     const roomName = (opts.roomName ?? "").trim().slice(0, 24);
     if (!username || !roomName) throw new Error("房间名不能为空");
-    let roomId: string;
-    if (opts.roomId !== undefined) {
-      roomId = opts.roomId.toLowerCase();
-      if (!RoomRegistry.ROOM_ID_RE.test(roomId)) throw new Error("房间号需为 3-24 位小写字母/数字/连字符/下划线，且以字母或数字开头");
-      if (this.rooms.has(roomId)) throw new Error(`房间号 ${roomId} 已被占用`);
-    } else {
-      roomId = randomBytes(4).toString("base64url").replace(/[-_]/g, "a").slice(0, 6).toLowerCase();
-      while (this.rooms.has(roomId)) roomId = makeMediaId().slice(2, 10).toLowerCase();
-    }
+    let roomId = randomUUID();
+    while (this.rooms.has(roomId)) roomId = randomUUID();
     let inviteCode: string | null;
     if (opts.inviteCode !== undefined) {
       inviteCode = opts.inviteCode.toUpperCase();
       if (!RoomRegistry.INVITE_CODE_RE.test(inviteCode)) throw new Error("邀请码需为 4-16 位字母/数字（可含连字符）");
+      if (this.roomIdForInvite(inviteCode)) throw new Error("邀请码已被占用");
     } else {
-      inviteCode = opts.noInvite ? null : makeInviteCode();
+      inviteCode = opts.noInvite ? null : this.unusedInviteCode();
     }
     const room: RoomRecord = {
       roomId,
@@ -343,7 +347,8 @@ export class RoomRegistry {
   joinRoom(roomId: string, identity: JoinIdentity): JoinRoomResult {
     const room = this.rooms.get(roomId.toLowerCase());
     if (!room) return { ok: false, reason: "room-not-found" };
-    if (!identity.username && room.inviteCode !== null) {
+    const isOwner = identity.username === room.hostUser;
+    if (!isOwner && room.inviteCode !== null) {
       if (!identity.inviteCode) return { ok: false, reason: "invite-required" };
       if (identity.inviteCode.trim().toUpperCase() !== room.inviteCode) return { ok: false, reason: "invite-invalid" };
     }
@@ -364,14 +369,14 @@ export class RoomRegistry {
     if (member.role !== "host" || member.clientId !== room.hostClientId) {
       return { ok: false, reason: "not-host" };
     }
-    room.inviteCode = makeInviteCode();
+    room.inviteCode = this.unusedInviteCode();
     room.lastActiveAt = this.now();
     this.save();
     this.audit({ roomId, action: "room:rotate-invite", clientId: member.clientId });
     return { ok: true, inviteCode: room.inviteCode };
   }
 
-  /** 修改房间名（仅房主；房间名纯展示，不影响房间号/访问码）。 */
+  /** 修改房间名（仅房主；不影响内部 GUID 和邀请码）。 */
   renameRoom(
     roomId: string,
     member: MemberRecord,
@@ -567,10 +572,8 @@ export class RoomRegistry {
     return true;
   }
 
-  /** 公开房间列表（大厅展示）：房间号、房间名、房主昵称、创建时间、在线人数、视频数；
-   *  hasInvite=false 表示该房间未设置访问码（凭房间号即可加入）；
-   *  传入查看者用户名时标记 deletable（房主本人或管理员可删除房间）。 */
-  listRooms(viewer?: string): { roomId: string; roomName: string; hostName: string; createdAt: number; memberCount: number; mediaCount: number; hasInvite: boolean; deletable: boolean }[] {
+  /** 大厅展示内部房间标识、房间名、房主昵称、在线人数和加入策略。 */
+  listRooms(viewer?: string): { roomId: string; roomName: string; hostName: string; createdAt: number; memberCount: number; mediaCount: number; hasInvite: boolean; owned: boolean; deletable: boolean }[] {
     return [...this.rooms.values()].map((r) => ({
       roomId: r.roomId,
       roomName: r.roomName,
@@ -579,6 +582,7 @@ export class RoomRegistry {
       memberCount: r.members.size,
       mediaCount: r.media.size,
       hasInvite: r.inviteCode !== null,
+      owned: viewer === r.hostUser,
       deletable: viewer !== undefined && (viewer === r.hostUser || this.isAdmin?.(viewer) === true),
     }));
   }

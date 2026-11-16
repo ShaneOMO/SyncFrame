@@ -170,8 +170,8 @@ test("账户管理：非管理员 403；管理员可创建/删除/重置密码",
   assert.equal(delSelf.status, 400);
 });
 
-test("创建房间：返回房间号 + 邀请码 + 房主成员令牌", () => {
-  assert.match(created.roomId, /^[a-z0-9]{6}$/);
+test("创建房间：返回内部 GUID + 唯一邀请码 + 房主成员令牌", () => {
+  assert.match(created.roomId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   assert.match(created.inviteCode, /^[A-Z2-9]{8}$/);
   assert.equal(created.role, "host");
   assert.ok(created.memberToken.length > 20);
@@ -180,7 +180,12 @@ test("创建房间：返回房间号 + 邀请码 + 房主成员令牌", () => {
   assert.ok(!("hostSecret" in created), "房主身份不得依赖浏览器持有的独立密钥");
 });
 
-test("加入房间：游客访问码错误与房间不存在返回明确错误", async () => {
+test("邀请码在当前实例唯一", async () => {
+  const duplicate = await postJson(BASE, "/api/rooms", { name: "重复邀请码", inviteCode: created.inviteCode }, hostUserToken);
+  assert.equal(duplicate.status, 409);
+});
+
+test("加入房间：邀请码错误与房间不存在返回明确错误", async () => {
   const bad = await joinRoom(BASE, created.roomId, "小明", "XXXXXX");
   assert.equal(bad.status, 403);
   const noRoom = await joinRoom(BASE, "zzzzzz", "小明", created.inviteCode);
@@ -203,7 +208,7 @@ test("加入房间：正确邀请码 → 观众成员令牌（clientId 由服务
   assert.equal(auth1.status, 200);
 });
 
-test("房主只凭创建者账户重进，昵称不能伪造且无需游客访问码", async () => {
+test("房主只凭创建者账户重进，昵称不能伪造且无需邀请码", async () => {
   const rejoin = await joinRoom(BASE, created.roomId, "伪造昵称", undefined, hostUserToken);
   assert.equal(rejoin.status, 200);
   assert.equal(rejoin.data.role, "host");
@@ -220,14 +225,31 @@ test("房主只凭创建者账户重进，昵称不能伪造且无需游客访�
 
 test("登录成员与游客分轨显示；失效账户令牌不能降级成游客", async () => {
   const accountToken = await loginUser(BASE, ADMIN_USER, ADMIN_PASS);
-  const member = await joinRoom(BASE, created.roomId, "游客假名", undefined, accountToken);
+  const member = await joinRoom(BASE, created.roomId, "游客假名", created.inviteCode, accountToken);
   assert.equal(member.status, 200);
   assert.equal(member.data.role, "viewer");
   assert.equal(member.data.kind, "user");
   assert.equal(member.data.name, ADMIN_USER);
   assert.equal(member.data.username, ADMIN_USER);
+  const withoutInvite = await joinRoom(BASE, created.roomId, ADMIN_USER, undefined, accountToken);
+  assert.equal(withoutInvite.status, 403, "非房主登录用户也必须提供邀请码");
   const expired = await joinRoom(BASE, created.roomId, "不应成为游客", created.inviteCode, "invalid-user-token");
   assert.equal(expired.status, 401);
+});
+
+test("手动加入只需要邀请码，不需要知道内部房间 GUID", async () => {
+  const joined = await postJson(BASE, "/api/rooms/join", { inviteCode: created.inviteCode, name: "邀请码观众" });
+  assert.equal(joined.status, 200);
+  assert.equal(joined.data.roomId, created.roomId);
+  assert.equal(joined.data.kind, "guest");
+});
+
+test("无邀请码的公开房间允许任何用户直接进入", async () => {
+  const publicRoom = await postJson(BASE, "/api/rooms", { name: "公开房间", noInvite: true }, hostUserToken);
+  assert.equal(publicRoom.status, 200);
+  const joined = await joinRoom(BASE, String(publicRoom.data.roomId), "公开游客");
+  assert.equal(joined.status, 200);
+  assert.equal(joined.data.kind, "guest");
 });
 
 test("WS 入场：无令牌 / 伪造令牌 → 拒绝；有效观众令牌 → welcome", async () => {
