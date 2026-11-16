@@ -1,38 +1,36 @@
-/**
- * P3 房间会话：成员令牌在浏览器 tab 内的存取（sessionStorage）。
- * 大厅页与房间页共用；令牌不出现在 URL 中。
- */
-
 export interface RoomSession {
   memberToken: string;
   clientId: string;
   role: "host" | "viewer";
+  kind: "user" | "guest";
   name: string;
+  username: string | null;
   roomId: string;
+  roomName: string;
   expiresAt: number;
-  /** 房间展示名（创建时设置的房间名）；旧会话可能缺失，回退显示房间号。 */
-  roomName?: string;
-  /** 仅房主会话持有：成员令牌过期后凭它重建房主身份。 */
-  hostSecret?: string;
 }
 
 export const sessionKey = (roomId: string): string => `syncframe-session-${roomId}`;
+export const inviteKey = (roomId: string): string => `syncframe-invite-${roomId}`;
 
-export function saveSession(sess: RoomSession): void {
-  sessionStorage.setItem(sessionKey(sess.roomId), JSON.stringify(sess));
+export function saveSession(session: RoomSession): void {
+  sessionStorage.setItem(sessionKey(session.roomId), JSON.stringify(session));
 }
 
 export function loadSession(roomId: string): RoomSession | null {
   try {
     const raw = sessionStorage.getItem(sessionKey(roomId));
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as RoomSession;
-    if (!parsed.memberToken || !parsed.clientId || parsed.roomId !== roomId) return null;
-    if (parsed.expiresAt && parsed.expiresAt <= Date.now()) {
-      sessionStorage.removeItem(sessionKey(roomId));
-      return null;
-    }
-    return parsed;
+    const value = JSON.parse(raw) as Partial<RoomSession>;
+    if (
+      typeof value.memberToken !== "string" ||
+      typeof value.clientId !== "string" ||
+      value.roomId !== roomId ||
+      (value.role !== "host" && value.role !== "viewer") ||
+      (value.kind !== "user" && value.kind !== "guest") ||
+      typeof value.name !== "string"
+    ) return null;
+    return value as RoomSession;
   } catch {
     return null;
   }
@@ -40,4 +38,13 @@ export function loadSession(roomId: string): RoomSession | null {
 
 export function clearSession(roomId: string): void {
   sessionStorage.removeItem(sessionKey(roomId));
+}
+
+export function saveInviteCode(roomId: string, inviteCode: string): void {
+  if (inviteCode) sessionStorage.setItem(inviteKey(roomId), inviteCode);
+  else sessionStorage.removeItem(inviteKey(roomId));
+}
+
+export function loadInviteCode(roomId: string): string {
+  return sessionStorage.getItem(inviteKey(roomId)) ?? "";
 }

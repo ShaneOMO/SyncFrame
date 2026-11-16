@@ -9,7 +9,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { chromium, type Page } from "playwright-core";
 import { startOpenListStub } from "./openlist-stub.ts";
-import { ADMIN_PASS, ADMIN_USER, repoRoot } from "./room-api.ts";
+import { ADMIN_PASS, ADMIN_USER, createUserAsAdmin, loginUser, repoRoot } from "./room-api.ts";
 
 const BACKEND_PORT = 8940;
 const STUB_PORT = 8941;
@@ -72,6 +72,8 @@ async function main(): Promise<void> {
   children.push(vite);
   await waitHttp(`http://localhost:${BACKEND_PORT}/api/health`);
   await waitHttp(`${WEB}/lobby.html`);
+  const adminToken = await loginUser(`http://localhost:${BACKEND_PORT}`, ADMIN_USER, ADMIN_PASS);
+  await createUserAsAdmin(`http://localhost:${BACKEND_PORT}`, adminToken, "member1", "memberpw123");
 
   const executablePath = [
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -134,6 +136,7 @@ async function main(): Promise<void> {
     check("创建后跳转房间页", roomUrl.pathname === "/room.html" && roomId.length === 6, `roomId=${roomId}`);
     await waitSyncRole(host, "host");
     check("房主 WS 已连接", true);
+    check("房主显示账户名而不是房间名", (await host.locator("body").innerText()).includes(`${ADMIN_USER} · 房主`));
     const invite = await host.evaluate(() => sessionStorage.getItem(`syncframe-invite-${new URL(location.href).searchParams.get("room")}`) ?? "");
     check("邀请码已存会话（8 位）", /^[A-Z2-9]{8}$/.test(invite), invite);
 
@@ -162,11 +165,32 @@ async function main(): Promise<void> {
     await viewer.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
     await waitSyncRole(viewer, "viewer");
     check("游客经邀请链接自动进房（viewer 角色）", true);
+    check("游客身份明确显示", (await viewer.locator("body").innerText()).includes("UI观众 · 游客"));
     check("观众无添加影片入口", (await viewer.getByRole("button", { name: "＋ 添加影片" }).count()) === 0);
     await sleep(800);
     check("房主看到观众成员", (await host.locator("body").innerText()).includes("UI观众"));
 
-    // ── 场景 3：房主选片 → 双方都收到媒体状态 ─────────
+    // ── 场景 3：登录成员从大厅加入，不得显示为游客 ──────
+    const ctx3 = await browser.newContext();
+    const member = await ctx3.newPage();
+    await member.goto(`${WEB}/lobby.html`, { waitUntil: "domcontentloaded" });
+    await member.getByRole("button", { name: "登录", exact: true }).click();
+    const memberAuth = member.getByRole("dialog");
+    await memberAuth.getByLabel("用户名").fill("member1");
+    await memberAuth.getByLabel("密码").fill("memberpw123");
+    await memberAuth.getByRole("button", { name: "登录", exact: true }).click();
+    await member.getByRole("button", { name: "member1", exact: true }).waitFor();
+    await member.locator("div.border-b", { hasText: "UI房间" }).getByRole("button", { name: "立即加入" }).click();
+    const memberJoin = member.getByRole("dialog");
+    check("登录成员加入时锁定账户身份", await memberJoin.getByLabel("登录身份").isDisabled());
+    await memberJoin.getByRole("button", { name: "加入房间" }).click();
+    await member.waitForURL(/room\.html\?room=/, { timeout: 30_000 });
+    await waitSyncRole(member, "viewer");
+    check("登录成员显示为成员而非游客", (await member.locator("body").innerText()).includes("member1 · 登录成员"));
+    await sleep(800);
+    check("房主名册将登录成员标记为成员", /member1\s*·\s*成员/.test(await host.locator("body").innerText()));
+
+    // ── 场景 4：房主选片 → 双方都收到媒体状态 ─────────
     await mediaDialog.getByText("movies", { exact: true }).click();
     await mediaDialog.getByText("a.mkv", { exact: true }).waitFor({ timeout: 10_000 });
     await mediaDialog.locator("div.border-b", { hasText: "a.mkv" }).getByRole("button", { name: "添加" }).click();

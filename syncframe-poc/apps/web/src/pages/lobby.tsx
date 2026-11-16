@@ -1,5 +1,5 @@
 /**
- * 大厅页（React 版，行为与旧 lobby-main.ts 对齐）：
+ * 大厅页：
  * - 房间列表：GET /api/rooms，15s 轮询刷新；行右侧「直接加入」预填加入弹窗；
  * - 「创建房间 / 加入房间」弹窗；创建需登录，房间名必填，可自定义房间号/访问码；
  * - 右上角用户按钮：未登录 → 登录弹窗；已登录 → 跳转设置页；管理员额外有「用户管理」；
@@ -20,7 +20,8 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { postJson } from "@/lib/api";
 import { clearUser, loadUser, saveUser, userHeaders, type LocalUser } from "@/lib/user";
-import { saveSession } from "@/session.ts";
+import { AccountExpiredError, joinRoom as joinRoomMembership, storeJoinResponse, verifyAccount } from "@/lib/room-membership";
+import { loadInviteCode, saveInviteCode } from "@/session";
 
 interface RoomSummary {
   roomId: string;
@@ -36,18 +37,8 @@ interface RoomSummary {
 const params = new URLSearchParams(location.search);
 const linkKey = params.get("key");
 
-function enterRoom(roomId: string, data: Record<string, unknown>, name: string): void {
-  saveSession({
-    roomId,
-    memberToken: String(data.memberToken),
-    clientId: String(data.clientId),
-    role: data.role === "host" ? "host" : "viewer",
-    name,
-    expiresAt: Number(data.expiresAt ?? 0),
-    ...(typeof data.roomName === "string" && data.roomName ? { roomName: data.roomName } : {}),
-    ...(typeof data.hostSecret === "string" ? { hostSecret: data.hostSecret } : {}),
-  });
-  location.href = `/room.html?room=${encodeURIComponent(roomId)}&name=${encodeURIComponent(name)}`;
+function enterRoom(roomId: string): void {
+  location.href = `/room.html?room=${encodeURIComponent(roomId)}`;
 }
 
 function LobbyPage() {
@@ -61,30 +52,31 @@ function LobbyPage() {
   const [authPassword, setAuthPassword] = useState("");
   const [authErr, setAuthErr] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+  const authFailureRef = useRef("");
 
   const refreshAuthState = useCallback(async (current: LocalUser | null) => {
     if (!current) {
       setIsAdmin(false);
-      return;
+      return null;
     }
     try {
-      const res = await fetch("/api/me", { headers: userHeaders(current) });
-      if (!res.ok) throw new Error("expired");
-      const body = (await res.json()) as { username: string; role?: string };
-      const next = { token: current.token, username: body.username };
-      saveUser(next);
-      setUser(next);
-      setIsAdmin(body.role === "admin");
-    } catch {
-      // 服务端重启等导致令牌失效：清理本地状态回登录态。
+      const verified = await verifyAccount();
+      setUser(verified);
+      setIsAdmin(verified?.role === "admin");
+      authFailureRef.current = "";
+      return verified;
+    } catch (err) {
       clearUser();
       setUser(null);
       setIsAdmin(false);
+      authFailureRef.current = err instanceof Error ? err.message : String(err);
+      return null;
     }
   }, []);
 
   useEffect(() => {
-    void refreshAuthState(user);
+    void refreshAuthState(user).finally(() => setAuthReady(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -198,14 +190,10 @@ function LobbyPage() {
         user.token,
       );
       const newRoomId = String(data.roomId);
-      // 邀请码/hostSecret 只在创建响应出现一次：存档供房间页展示与房主重建会话。
-      if (typeof data.inviteCode === "string" && data.inviteCode) {
-        sessionStorage.setItem(`syncframe-invite-${newRoomId}`, data.inviteCode);
-      } else {
-        sessionStorage.removeItem(`syncframe-invite-${newRoomId}`);
-      }
-      sessionStorage.setItem(`syncframe-hostsecret-${newRoomId}`, String(data.hostSecret));
-      enterRoom(newRoomId, data, name);
+      const inviteCode = typeof data.inviteCode === "string" ? data.inviteCode : "";
+      storeJoinResponse(newRoomId, data, inviteCode);
+      saveInviteCode(newRoomId, inviteCode);
+      enterRoom(newRoomId);
     } catch (err) {
       setCreateErr(`创建失败：${err instanceof Error ? err.message : err}`);
     } finally {
@@ -228,34 +216,29 @@ function LobbyPage() {
     setJoinOpen(true);
   };
 
-  /** 加入房间核心逻辑：手动提交与邀请链接自动加入共用（不依赖弹窗内的按钮 ref）。 */
   const doJoin = async (roomIdRaw: string, codeRaw: string, nameRaw: string) => {
     setJoinErr("");
     const roomId = roomIdRaw.trim().toLowerCase();
-    const trimmedCode = codeRaw.trim();
-    const code = trimmedCode ? trimmedCode.toUpperCase() : undefined;
-    // 昵称留空时服务端会回落到登录用户名（未登录才是 Guest）。
-    const name = nameRaw.trim();
     if (!roomId) {
       setJoinErr("请填写房间号");
       return;
     }
     setJoinBusy(true);
     try {
-      // 房主重建会话：本浏览器若持有该房间的 hostSecret，自动带上。
-      const hostSecret = sessionStorage.getItem(`syncframe-hostsecret-${roomId}`) ?? undefined;
-      const data = await postJson(
-        `/api/rooms/${encodeURIComponent(roomId)}/join`,
-        {
-          name,
-          ...(code ? { inviteCode: code } : {}),
-          ...(hostSecret ? { hostSecret } : {}),
-        },
-        userRef.current?.token,
-      );
-      enterRoom(roomId, data, typeof data.name === "string" && data.name ? data.name : name || "Guest");
+      await joinRoomMembership({
+        roomId,
+        account: userRef.current,
+        inviteCode: codeRaw.trim().toUpperCase(),
+        guestName: nameRaw,
+      });
+      enterRoom(roomId);
     } catch (err) {
-      setJoinErr(`加入失败：${err instanceof Error ? err.message : err}`);
+      if (err instanceof AccountExpiredError) {
+        clearUser();
+        setUser(null);
+        setIsAdmin(false);
+      }
+      setJoinErr(`加入失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setJoinBusy(false);
     }
@@ -263,24 +246,25 @@ function LobbyPage() {
 
   const submitJoin = () => void doJoin(joinRoom, joinCode, joinName);
 
-  // 邀请链接自动加入（?room=&key=）：游客点开链接直接进房，无需任何点击。
-  // 注意不能用 ref 防重入：StrictMode 开发态会「 effect → cleanup → effect 」，
-  // ref 防重入会让第二次 effect 直接返回，而第一次的定时器已被 cleanup 清掉，导致永远不触发。
-  // 正确模式：effect 里总是调度、cleanup 清理，重挂载后自然只生效一次。
   useEffect(() => {
+    if (!authReady) return;
     const linkRoom = params.get("room");
-    if (!linkRoom || !linkKey) return;
-    setJoinRoom(linkRoom);
-    setJoinCode(linkKey);
+    if (!linkRoom) return;
+    const code = linkKey ?? loadInviteCode(linkRoom);
     const linkName = params.get("name") ?? "";
-    if (linkName) setJoinName(linkName);
-    // 打开弹窗展示进度/错误（失败时用户可直接在弹窗里重试）。
+    setJoinRoom(linkRoom);
+    setJoinCode(code);
+    setJoinName(linkName);
     setJoinOpen(true);
-    // 等首帧渲染后触发，与旧版 click() 时序等价。
-    const t = window.setTimeout(() => void doJoin(linkRoom, linkKey, linkName), 0);
-    return () => window.clearTimeout(t);
+    if (authFailureRef.current) {
+      setJoinErr(authFailureRef.current);
+      return;
+    }
+    if (!linkKey && !userRef.current) return;
+    const timer = window.setTimeout(() => void doJoin(linkRoom, code, linkName), 0);
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authReady]);
 
   return (
     <div className="min-h-screen">
@@ -309,6 +293,9 @@ function LobbyPage() {
           </p>
           {params.get("expired") && (
             <p className="mt-4 text-sm text-amber-600 dark:text-amber-400">房间会话已过期，请重新加入</p>
+          )}
+          {params.get("auth") === "required" && (
+            <p className="mt-4 text-sm text-amber-600 dark:text-amber-400">登录状态需要重新验证，请登录后再加入；也可以以游客身份继续</p>
           )}
         </div>
 
@@ -472,7 +459,7 @@ function LobbyPage() {
             </div>
             <label className="flex cursor-pointer items-center gap-2 text-sm select-none">
               <Checkbox checked={createHasInvite} onCheckedChange={(v) => setCreateHasInvite(v === true)} />
-              生成访问码 <span className="text-muted-foreground">（只限制游客；登录用户凭房间号就能加入）</span>
+              生成游客访问码 <span className="text-muted-foreground">（登录成员凭账户身份加入）</span>
             </label>
             {createHasInvite && (
               <div className="space-y-2">
@@ -522,7 +509,7 @@ function LobbyPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="join-code">
-                访问码 <span className="font-normal text-muted-foreground">（游客必填，登录用户可留空）</span>
+                游客访问码 <span className="font-normal text-muted-foreground">（登录成员无需填写）</span>
               </Label>
               <Input
                 id="join-code"
@@ -534,13 +521,14 @@ function LobbyPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="join-name">你的昵称</Label>
+              <Label htmlFor="join-name">{user ? "登录身份" : "游客昵称（可选）"}</Label>
               <Input
                 id="join-name"
                 maxLength={24}
-                placeholder={user ? `${user.username}（留空用登录名）` : "例如：小红"}
+                disabled={Boolean(user)}
+                placeholder={user ? user.username : "留空则由服务端生成游客昵称"}
                 autoComplete="nickname"
-                value={joinName}
+                value={user ? user.username : joinName}
                 onChange={(e) => setJoinName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") joinBtnRef.current?.click();

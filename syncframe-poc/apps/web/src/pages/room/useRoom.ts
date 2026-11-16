@@ -1,14 +1,15 @@
 /**
- * 房间页主 hook：会话引导 + SyncClient + 播放器引擎 + UI 状态。
- * 行为对齐旧 room-main.ts；URL 参数（room/name/mode/hardDriftMs）不变。
+ * 房间页主 hook：服务端会话恢复 + SyncClient + 播放器引擎 + UI 状态。
+ * URL 只选择房间与播放模式；昵称、账户类型和角色均以服务端会话为准。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { SyncClient } from "@syncframe/sync-protocol";
-import { loadSession, clearSession, saveSession } from "@/session.ts";
+import { loadSession, clearSession, saveSession, loadInviteCode } from "@/session.ts";
 import type { RoomSession } from "@/session.ts";
 import { biliCredentialHeaders } from "@/bili-credential.ts";
 import { loadUser } from "@/lib/user.ts";
+import { AccountExpiredError, joinRoom, restoreRoomSession, verifyAccount } from "@/lib/room-membership";
 import {
   createEngine,
   makeFlags,
@@ -39,7 +40,8 @@ export interface MediaListItem {
 export interface RosterMember {
   id: string;
   name: string;
-  role: string;
+  role: "host" | "viewer";
+  kind: "user" | "guest";
 }
 
 export interface RoomUiState {
@@ -57,6 +59,7 @@ export interface RoomUiState {
   members: RosterMember[];
   statTotal: number;
   statHost: number;
+  statUser: number;
   statGuest: number;
   hostAway: boolean;
   viewerText: string;
@@ -108,64 +111,58 @@ function buildLink(roomId: string, code: string): string {
   return `${location.origin}/lobby.html?room=${encodeURIComponent(roomId)}&key=${encodeURIComponent(code)}`;
 }
 
-/** 房主静默重建会话（成员令牌过期/丢失时凭 hostSecret 直接重新加入）。 */
-async function rejoinAsHost(roomId: string, name: string, hostSecret: string): Promise<RoomSession | null> {
-  try {
-    const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, hostSecret }),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as Record<string, unknown>;
-    if (typeof data.memberToken !== "string" || typeof data.clientId !== "string") return null;
-    const sess: RoomSession = {
-      roomId,
-      memberToken: data.memberToken,
-      clientId: String(data.clientId),
-      role: "host",
-      name,
-      expiresAt: Number(data.expiresAt ?? 0),
-      hostSecret,
-      ...(typeof data.roomName === "string" && data.roomName ? { roomName: data.roomName } : {}),
-    };
-    saveSession(sess);
-    return sess;
-  } catch {
-    return null;
-  }
-}
-
 export function useRoom(): Bootstrap {
   const params = useMemo(() => new URLSearchParams(location.search), []);
   const roomId = (params.get("room") || "").slice(0, 64).toLowerCase();
-  const name = (params.get("name") || `Guest-${Math.random().toString(36).slice(2, 6)}`).slice(0, 24);
   const mode: RoomMode = params.get("mode") === "clock" ? "clock" : "player";
   const hardDriftMs = Number(params.get("hardDriftMs") ?? 1000);
 
   const [session, setSession] = useState<RoomSession | null>(null);
   const [booted, setBooted] = useState(false);
+  const localUserRef = useRef(loadUser());
+  const name = session?.name ?? "";
 
-  // ── 会话引导 ──────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      let sess = roomId ? loadSession(roomId) : null;
-      if (roomId && !sess) {
-        const hostSecret = sessionStorage.getItem(`syncframe-hostsecret-${roomId}`);
-        if (hostSecret) sess = await rejoinAsHost(roomId, name, hostSecret);
-      }
-      if (cancelled) return;
-      if (!roomId || !sess) {
-        location.replace(`/lobby.html${roomId ? `?room=${encodeURIComponent(roomId)}&expired=1` : ""}`);
+      if (!roomId) {
+        location.replace("/lobby.html");
         return;
       }
-      setSession(sess);
+      let account;
+      try {
+        account = await verifyAccount();
+      } catch {
+        location.replace(`/lobby.html?room=${encodeURIComponent(roomId)}&auth=required`);
+        return;
+      }
+      localUserRef.current = account;
+      const previous = loadSession(roomId);
+      let sess = await restoreRoomSession(roomId, account);
+      if (!sess) {
+        try {
+          sess = await joinRoom({
+            roomId,
+            account,
+            inviteCode: params.get("key") ?? loadInviteCode(roomId),
+            guestName: previous?.kind === "guest" ? previous.name : params.get("name") ?? "",
+          });
+        } catch (err) {
+          clearSession(roomId);
+          const accountExpired = err instanceof AccountExpiredError;
+          const query = new URLSearchParams({ room: roomId, ...(accountExpired ? { auth: "required" } : { expired: "1" }) });
+          const inviteCode = params.get("key") ?? loadInviteCode(roomId);
+          if (inviteCode && !accountExpired) query.set("key", inviteCode);
+          location.replace(`/lobby.html?${query.toString()}`);
+          return;
+        }
+      }
+      if (!cancelled) setSession(sess);
     })();
     return () => {
       cancelled = true;
     };
-  }, [roomId, name]);
+  }, [roomId, params]);
 
   // ── UI 状态 ───────────────────────────────────────────
   const [status, setStatus] = useState({ text: "初始化…", warn: false });
@@ -188,7 +185,6 @@ export function useRoom(): Bootstrap {
   const engineRef = useRef<Engine | null>(null);
   const sessionRef = useRef<RoomSession | null>(null);
   sessionRef.current = session;
-  const localUserRef = useRef(loadUser());
   const uiBridgeRef = useRef<UiBridge | null>(null);
   const role = session?.role ?? "viewer";
   const memberToken = session?.memberToken ?? "";
@@ -302,15 +298,17 @@ export function useRoom(): Bootstrap {
       onRoster: (msg) => {
         setHostAway(Boolean(msg.hostAway));
         let hostCount = 0;
+        let userCount = 0;
         let guestCount = 0;
         const list: RosterMember[] = [];
         for (const m of msg.members) {
           if (m.role === "host") hostCount++;
+          else if (m.kind === "user") userCount++;
           else guestCount++;
-          list.push({ id: m.id, name: m.name, role: m.role });
+          list.push({ id: m.id, name: m.name, role: m.role, kind: m.kind });
         }
         setMembers(list);
-        rosterStatsRef.current = { hostCount, guestCount };
+        rosterStatsRef.current = { hostCount, userCount, guestCount };
       },
       onGestureNeeded: () => setGesture(true),
       onStateApplied: (state) => {
@@ -349,7 +347,7 @@ export function useRoom(): Bootstrap {
     })();
 
     // 邀请链接：仅创建者浏览器会话里有邀请码。
-    const invite = sessionStorage.getItem(`syncframe-invite-${roomId}`);
+    const invite = loadInviteCode(roomId);
     if (sess.role === "host") {
       if (invite) setInviteCode(invite);
     }
@@ -375,7 +373,7 @@ export function useRoom(): Bootstrap {
   }, [session !== null]);
 
   // ── tick 派生 UI ──────────────────────────────────────
-  const rosterStatsRef = useRef({ hostCount: 0, guestCount: 0 });
+  const rosterStatsRef = useRef({ hostCount: 0, userCount: 0, guestCount: 0 });
   const client = clientRef.current;
   const stats = client ? client.sample() : null;
   const state = client ? client.currentRoomState() : null;
@@ -406,7 +404,6 @@ export function useRoom(): Bootstrap {
           }
           clearSession(roomId);
           sessionStorage.removeItem(`syncframe-invite-${roomId}`);
-          sessionStorage.removeItem(`syncframe-hostsecret-${roomId}`);
           location.replace("/lobby.html");
         } catch (err) {
           setStatus({ text: `删除失败：${err instanceof Error ? err.message : err}`, warn: true });
@@ -593,8 +590,9 @@ export function useRoom(): Bootstrap {
         : "已连接",
     connOk: connected,
     members,
-    statTotal: rosterStatsRef.current.hostCount + rosterStatsRef.current.guestCount,
+    statTotal: rosterStatsRef.current.hostCount + rosterStatsRef.current.userCount + rosterStatsRef.current.guestCount,
     statHost: rosterStatsRef.current.hostCount,
+    statUser: rosterStatsRef.current.userCount,
     statGuest: rosterStatsRef.current.guestCount,
     hostAway,
     viewerText: !connected

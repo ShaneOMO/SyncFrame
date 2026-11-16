@@ -59,9 +59,18 @@ test("房间持久化：房间/成员令牌/邀请码/媒体映射重启后恢�
   const dir = tempDir();
   try {
     const r = new RoomRegistry({ dataDir: dir });
-    const { room, member } = r.createRoom("房主", "alice");
-    const viewer = r.joinRoom(room.roomId, "观众", { inviteCode: room.inviteCode })!;
-    assert.ok(viewer);
+    const { room, member } = r.createRoom("alice", { roomName: "房主" });
+    const reentered = r.joinRoom(room.roomId, { username: "alice" });
+    assert.ok(reentered.ok);
+    if (reentered.ok) {
+      assert.equal(reentered.member.token, member.token, "同一账户重复加入应保持幂等");
+      assert.equal(reentered.member.role, "host");
+      assert.equal(reentered.member.kind, "user");
+    }
+    const joined = r.joinRoom(room.roomId, { guestName: "观众", inviteCode: room.inviteCode ?? undefined });
+    assert.ok(joined.ok);
+    if (!joined.ok) return;
+    const viewer = joined.member;
     const reg = r.registerMedia(room.roomId, member, "", { name: "视频", size: 0 }, [], {
       provider: "直链",
       directUrl: "https://example.com/v.mp4",

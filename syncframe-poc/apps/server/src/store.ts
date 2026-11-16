@@ -34,7 +34,6 @@ export interface StoredRoom {
   /** 房间名（旧数据无此列，加载时回落为 hostName）。 */
   roomName?: string | null;
   inviteCode: string | null;
-  hostSecret: string;
   createdAt: number;
   lastActiveAt: number;
   hostClientId: string;
@@ -160,7 +159,6 @@ export class Store {
           roomId: r.room_id as string,
           roomName: (r.room_name as string | null) ?? null,
           inviteCode: (r.invite_code as string | null) ?? null,
-          hostSecret: r.host_secret as string,
           createdAt: r.created_at as number,
           lastActiveAt: r.last_active_at as number,
           hostClientId: r.host_client_id as string,
@@ -190,7 +188,7 @@ export class Store {
         r.roomId,
         r.roomName ?? null,
         r.inviteCode,
-        r.hostSecret,
+        "",
         r.createdAt,
         r.lastActiveAt,
         r.hostClientId,

@@ -35,6 +35,7 @@ interface Member {
   id: string;
   name: string;
   role: Role;
+  kind: "user" | "guest";
   ws: WebSocket;
   alive: number;
 }
@@ -87,7 +88,7 @@ export class RoomManager {
   }
 
   /** WS upgrade 入口（P3 起鉴权前置）：room 必须已存在，成员身份由 room-auth 校验后传入。 */
-  handleJoin(ws: WebSocket, roomId: string, member: { clientId: string; name: string; role: Role }): void {
+  handleJoin(ws: WebSocket, roomId: string, member: { clientId: string; name: string; role: Role; kind: "user" | "guest" }): void {
     if (!roomId) {
       ws.close(4000, "缺少 room 参数");
       return;
@@ -102,7 +103,7 @@ export class RoomManager {
       ws.close(4001, "房间已满（上限 12 人）");
       return;
     }
-    room.join(ws, member.clientId, member.name, member.role);
+    room.join(ws, member.clientId, member.name, member.role, member.kind);
   }
 
   /** 延迟注入投递：所有服务端→客户端消息都走这里。 */
@@ -175,7 +176,7 @@ export class Room {
     return this.hostAwaySince !== null;
   }
 
-  join(ws: WebSocket, clientId: string, name: string, wantRole: Role): void {
+  join(ws: WebSocket, clientId: string, name: string, wantRole: Role, kind: "user" | "guest"): void {
     // 房主重连（同一 clientId）：恢复 host 身份与权威状态（S07）。
     const reclaimHost = this.hostId === clientId;
     const isHost = reclaimHost || (wantRole === "host" && this.hostId === null);
@@ -192,7 +193,7 @@ export class Room {
       this.members.delete(clientId);
     }
 
-    const member: Member = { id: clientId, name, role, ws, alive: this.mgr.stamp() };
+    const member: Member = { id: clientId, name, role, kind, ws, alive: this.mgr.stamp() };
     this.members.set(clientId, member);
     if (isHost) {
       this.hostId = clientId;
@@ -397,7 +398,7 @@ export class Room {
   }
 
   private roster(): MemberInfo[] {
-    return [...this.members.values()].map((m) => ({ id: m.id, name: m.name, role: m.role }));
+    return [...this.members.values()].map((m) => ({ id: m.id, name: m.name, role: m.role, kind: m.kind }));
   }
 
   private broadcastRoster(): void {

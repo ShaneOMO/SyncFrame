@@ -24,8 +24,9 @@
  *  - GET  /api/rooms                                   公开房间列表（大厅；带 userToken 时标记可删除的房间）
  *  - POST /api/rooms            (Bearer userToken) {name, roomId?, inviteCode?, noInvite?} → {roomId, inviteCode|null, memberToken, ...}
  *                                                    （游客 401；noInvite=true 则不生成访问码，凭房间号即可加入）
- *  - POST /api/rooms/:id/join   {name, inviteCode?, clientId?}（公开；访问码只约束游客，
- *                                                    可选 Bearer userToken：登录用户凭房间号即可进房、昵称缺省用用户名）
+ *  - POST /api/rooms/:id/join   {name?, inviteCode?}（游客访问码；Bearer userToken 为登录成员，
+ *                                                    服务端按创建者账户判定房主，登录名不可由请求伪造）
+ *  - GET  /api/rooms/:id/session (Bearer memberToken) 恢复并核验服务端房间身份
  *  - POST /api/rooms/:id/rename {name}（Bearer memberToken，仅房主）修改房间名（纯展示）
  *  - DELETE /api/rooms/:id      (Bearer userToken)   删除房间（仅房主本人或管理员）；房间只有被删除才会消失
  *  - GET  /api/browse?provider=&path=&page=           列目录（仅房主本人账户 + X-User-Token）
@@ -457,76 +458,74 @@ async function handleSetProviders(req: IncomingMessage, res: ServerResponse, bod
 
 // ── 房间端点实现 ─────────────────────────────────────────────
 
+function memberSession(room: NonNullable<ReturnType<RoomRegistry["peek"]>>, member: MemberRecord): Record<string, unknown> {
+  return {
+    roomId: room.roomId,
+    roomName: room.roomName,
+    memberToken: member.token,
+    clientId: member.clientId,
+    role: member.role,
+    kind: member.kind,
+    name: member.name,
+    username: member.username,
+    expiresAt: member.expiresAt,
+    ...(member.role === "host" ? { inviteCode: room.inviteCode } : {}),
+  };
+}
+
 async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, body: string): Promise<void> {
-  // 游客只能加入房间：创建房间必须登录（用户令牌）。
   const hostUser = accounts.authenticate(bearerToken(req));
   if (!hostUser) {
     sendJson(res, 401, { error: "创建房间需要先登录账户" });
     return;
   }
   const parsed = readJsonBody(body);
-  const name = typeof parsed.name === "string" ? parsed.name : "";
-  const clientId = typeof parsed.clientId === "string" ? parsed.clientId : undefined;
-  const roomIdOpt = typeof parsed.roomId === "string" && parsed.roomId.trim() ? parsed.roomId.trim() : undefined;
-  const inviteOpt = typeof parsed.inviteCode === "string" && parsed.inviteCode.trim() ? parsed.inviteCode.trim() : undefined;
-  // 创建时可选不生成访问码：此时任何人凭房间号即可加入（显式自定义邀请码优先）。
-  const noInvite = parsed.noInvite === true && inviteOpt === undefined;
-  if (!name.trim()) {
+  const roomName = typeof parsed.name === "string" ? parsed.name : "";
+  const roomId = typeof parsed.roomId === "string" && parsed.roomId.trim() ? parsed.roomId.trim() : undefined;
+  const inviteCode = typeof parsed.inviteCode === "string" && parsed.inviteCode.trim() ? parsed.inviteCode.trim() : undefined;
+  const noInvite = parsed.noInvite === true && inviteCode === undefined;
+  if (!roomName.trim()) {
     sendJson(res, 400, { error: "房间名不能为空" });
     return;
   }
-  let created: ReturnType<typeof registry.createRoom>;
   try {
-    // hostName = 创建者用户名（房主显示名）；name = 房间名（展示用，与房主解耦）。
-    created = registry.createRoom(hostUser, hostUser, clientId, { roomId: roomIdOpt, inviteCode: inviteOpt, noInvite, roomName: name });
+    const { room, member } = registry.createRoom(hostUser, { roomId, inviteCode, noInvite, roomName });
+    sendJson(res, 200, { ...memberSession(room, member), inviteCode: room.inviteCode });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     sendJson(res, message.includes("已被占用") ? 409 : 400, { error: message });
-    return;
   }
-  const { room, member, hostSecret } = created;
-  sendJson(res, 200, {
-    roomId: room.roomId,
-    // 房间页徽标展示用。
-    roomName: room.roomName,
-    // 未生成访问码的房间返回 null，客户端不展示邀请链接。
-    inviteCode: room.inviteCode,
-    hostSecret,
-    memberToken: member.token,
-    clientId: member.clientId,
-    role: member.role,
-    expiresAt: member.expiresAt,
-  });
 }
 
-async function handleJoinRoom(
-  req: IncomingMessage,
-  res: ServerResponse,
-  roomId: string,
-  body: string,
-): Promise<void> {  const parsed = readJsonBody(body);
-  // 可选 Bearer userToken：登录用户未填昵称（或仍是默认 Guest 名）时用其用户名。
-  const username = accounts.authenticate(bearerToken(req));
-  let name = typeof parsed.name === "string" ? parsed.name.trim() : "";
-  if (username && (!name || /^guest/i.test(name))) name = username;
-  const inviteCode = typeof parsed.inviteCode === "string" ? parsed.inviteCode : undefined;
-  const hostSecret = typeof parsed.hostSecret === "string" ? parsed.hostSecret : undefined;
-  // 登录用户凭账户身份进房（访问码只约束游客）；房主重建会话凭 hostSecret。
-  const member = registry.joinRoom(roomId, name, { inviteCode, hostSecret, ...(username ? { asUser: username } : {}) });
-  if (!member) {
-    // 房间不存在与邀请码错误都返回 401，不暴露房间存在性。
-    sendJson(res, 401, { error: "房间不存在或邀请码错误" });
+async function handleJoinRoom(req: IncomingMessage, res: ServerResponse, roomId: string, body: string): Promise<void> {
+  const userToken = bearerToken(req);
+  const username = userToken ? accounts.authenticate(userToken) : null;
+  if (req.headers.authorization && !username) {
+    sendJson(res, 401, { error: "登录已过期，请重新登录后再加入", code: "ACCOUNT_AUTH_EXPIRED" });
     return;
   }
-  sendJson(res, 200, {
-    memberToken: member.token,
-    clientId: member.clientId,
-    role: member.role,
-    expiresAt: member.expiresAt,
-    name: member.name,
-    // 房间页徽标展示用。
-    roomName: registry.peek(roomId)?.roomName ?? "",
+  const parsed = readJsonBody(body);
+  const result = registry.joinRoom(roomId, {
+    ...(username ? { username } : {}),
+    guestName: typeof parsed.name === "string" ? parsed.name : "",
+    inviteCode: typeof parsed.inviteCode === "string" ? parsed.inviteCode : "",
   });
+  if (!result.ok) {
+    if (result.reason === "room-not-found") sendJson(res, 404, { error: "房间不存在", code: "ROOM_NOT_FOUND" });
+    else sendJson(res, 403, { error: result.reason === "invite-required" ? "请输入游客访问码" : "游客访问码错误", code: "INVITE_INVALID" });
+    return;
+  }
+  sendJson(res, 200, memberSession(result.room, result.member));
+}
+
+function handleRoomSession(req: IncomingMessage, res: ServerResponse, roomId: string): void {
+  const member = registry.authenticate(roomId, bearerToken(req));
+  const room = registry.peek(roomId);
+  if (!member || !room) {
+    sendJson(res, 401, { error: "房间会话无效或已过期", code: "ROOM_SESSION_EXPIRED" });
+    return;
+  }
+  sendJson(res, 200, memberSession(room, member));
 }
 
 /** 修改房间名（仅房主；纯展示字段）。 */
@@ -1318,6 +1317,8 @@ const server = createServer(async (req, res) => {
       await handleAdminDeleteUser(req, res, decodeURIComponent(url.pathname.split("/")[4]));
     } else if (url.pathname.startsWith("/api/admin/users/") && req.method === "POST" && url.pathname.endsWith("/password")) {
       await handleAdminResetPassword(req, res, decodeURIComponent(url.pathname.split("/")[4]), await readBody(req));
+    } else if (url.pathname.startsWith("/api/rooms/") && req.method === "GET" && url.pathname.endsWith("/session")) {
+      handleRoomSession(req, res, url.pathname.split("/")[3]);
     } else if (url.pathname.startsWith("/api/rooms/") && req.method === "POST" && url.pathname.endsWith("/join")) {
       if (!rateLimit("join", clientIp(req))) {
         sendJson(res, 429, { error: "尝试过于频繁，请稍后再试" });

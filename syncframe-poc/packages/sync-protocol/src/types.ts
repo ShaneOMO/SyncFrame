@@ -40,11 +40,13 @@ export interface RoomState {
 
 export type StateAction = "play" | "pause" | "seek" | "rate" | "load" | "hb";
 export type Role = "host" | "viewer";
+export type MemberKind = "user" | "guest";
 
 export interface MemberInfo {
   id: string;
   name: string;
   role: Role;
+  kind: MemberKind;
 }
 
 /** 房主发出的控制命令（仅 host；服务端校验 role，S13）。 */

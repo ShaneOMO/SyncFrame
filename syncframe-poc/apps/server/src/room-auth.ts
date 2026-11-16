@@ -3,8 +3,8 @@
  *
  * 职责：
  * - 房间注册：POST /api/rooms 生成 roomId + 观众邀请码 inviteCode，创建者成为房主成员；
- * - 成员会话：join 签发 memberToken（随机、12h 有效、绑定房间+角色+clientId），
- *   WebSocket 凭 memberToken 入场（服务端由此获得最后的权限门）；
+ * - 成员会话：join 按账户/游客身份签发 memberToken（随机、12h 有效）；
+ *   房主只由 hostUser 判定，登录名由账户令牌决定，WebSocket 使用同一成员记录入场；
  * - 媒体受控映射：房主通过 POST /api/rooms/:id/media 把 OpenList 路径注册为
  *   不透明 mediaId（m_<base36>）；WebSocket 只广播 mediaId，永不出现 URL/路径；
  * - 短期媒体访问凭证：GET .../media/:mediaId/grant 校验「是该房间成员 + mediaId 已注册」后，
@@ -33,6 +33,17 @@ const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const SUBTITLE_EXTS = new Set([".srt", ".ass", ".ssa", ".vtt"]);
 
 export type Role = "host" | "viewer";
+export type MemberKind = "user" | "guest";
+
+export interface JoinIdentity {
+  username?: string;
+  guestName?: string;
+  inviteCode?: string;
+}
+
+export type JoinRoomResult =
+  | { ok: true; room: RoomRecord; member: MemberRecord }
+  | { ok: false; reason: "room-not-found" | "invite-required" | "invite-invalid" };
 
 export interface MediaEntry {
   mediaId: string;
@@ -64,6 +75,8 @@ export interface MemberRecord {
   clientId: string;
   name: string;
   role: Role;
+  kind: MemberKind;
+  username: string | null;
   expiresAt: number;
   joinedAt: number;
 }
@@ -74,8 +87,6 @@ export interface RoomRecord {
   roomName: string;
   /** 访问码（邀请码）：null 表示创建时选择不生成，任何人凭房间号即可加入。 */
   inviteCode: string | null;
-  /** 房主重连密钥：只在创建响应中出现一次，可重建房主会话（替代可被观众看到的 clientId）。 */
-  hostSecret: string;
   createdAt: number;
   /** 最近一次成员活动（加入/授权）：注册表清扫据此判断闲置。 */
   lastActiveAt: number;
@@ -179,14 +190,22 @@ export class RoomRegistry {
         roomName: r.roomName ?? r.hostName,
         // 兼容旧版数据：inviteCode 缺省视为已生成（旧版必然有值）。
         inviteCode: r.inviteCode ?? null,
-        hostSecret: r.hostSecret,
         createdAt: r.createdAt,
         lastActiveAt: r.lastActiveAt,
         hostClientId: r.hostClientId,
         hostName: r.hostName,
         hostUser: r.hostUser,
         media: new Map((r.media ?? []) as [string, MediaEntry][]),
-        members: new Map((r.members ?? []) as [string, MemberRecord][]),
+        members: new Map(((r.members ?? []) as [string, MemberRecord][]).map(([token, member]) => {
+          const isOwner = member.clientId === r.hostClientId || member.username === r.hostUser;
+          return [token, {
+            ...member,
+            role: isOwner ? "host" : "viewer",
+            kind: member.kind ?? (isOwner ? "user" : "guest"),
+            username: member.username ?? (isOwner ? r.hostUser : null),
+            name: isOwner ? r.hostUser : member.name,
+          }] as [string, MemberRecord];
+        })),
       });
     }
   }
@@ -204,7 +223,6 @@ export class RoomRegistry {
           roomId: r.roomId,
           roomName: r.roomName,
           inviteCode: r.inviteCode,
-          hostSecret: r.hostSecret,
           createdAt: r.createdAt,
           lastActiveAt: r.lastActiveAt,
           hostClientId: r.hostClientId,
@@ -249,19 +267,13 @@ export class RoomRegistry {
   static readonly ROOM_ID_RE = /^[a-z0-9][a-z0-9_-]{2,23}$/;
   static readonly INVITE_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9-]{3,15}$/;
 
-  /**
-   * 创建房间：创建者即房主（memberToken 直接签发）；hostSecret 用于房主重建会话。
-   * hostName = 房主显示名（创建者用户名）；opts.roomName = 房间名（缺省回落为房主名）。
-   * opts.roomId / opts.inviteCode：可选自定义字符串（校验形态与唯一性，roomId 存小写、邀请码存大写）。
-   * 房间名为空、roomId 已被占用、邀请码形态非法时抛出 Error（调用方转 400/409）。
-   */
-  createRoom(hostName: string, hostUser: string, hostClientId?: string, opts: { roomId?: string; inviteCode?: string; noInvite?: boolean; roomName?: string } = {}): {
+  createRoom(hostUser: string, opts: { roomId?: string; inviteCode?: string; noInvite?: boolean; roomName?: string } = {}): {
     room: RoomRecord;
     member: MemberRecord;
-    hostSecret: string;
   } {
-    const name = hostName.trim().slice(0, 24);
-    if (!name) throw new Error("房间名不能为空");
+    const username = hostUser.trim();
+    const roomName = (opts.roomName ?? "").trim().slice(0, 24);
+    if (!username || !roomName) throw new Error("房间名不能为空");
     let roomId: string;
     if (opts.roomId !== undefined) {
       roomId = opts.roomId.toLowerCase();
@@ -274,76 +286,71 @@ export class RoomRegistry {
     let inviteCode: string | null;
     if (opts.inviteCode !== undefined) {
       inviteCode = opts.inviteCode.toUpperCase();
-      if (!RoomRegistry.INVITE_CODE_RE.test(inviteCode)) {
-        throw new Error("邀请码需为 4-16 位字母/数字（可含连字符）");
-      }
-    } else if (opts.noInvite) {
-      inviteCode = null; // 创建时选择不生成访问码：任何人凭房间号即可加入
+      if (!RoomRegistry.INVITE_CODE_RE.test(inviteCode)) throw new Error("邀请码需为 4-16 位字母/数字（可含连字符）");
     } else {
-      inviteCode = makeInviteCode();
+      inviteCode = opts.noInvite ? null : makeInviteCode();
     }
-    const hostSecret = randomUUID();
     const room: RoomRecord = {
       roomId,
-      roomName: (opts.roomName ?? "").trim().slice(0, 24) || name,
+      roomName,
       inviteCode,
-      hostSecret,
       createdAt: this.now(),
       lastActiveAt: this.now(),
-      hostClientId: "",
-      hostName: name,
-      hostUser,
+      hostClientId: randomUUID(),
+      hostName: username,
+      hostUser: username,
       media: new Map(),
       members: new Map(),
     };
     this.rooms.set(roomId, room);
-    const member = this.addMember(room, name, "host", hostClientId);
+    const member = this.issueMember(room, { username });
     this.save();
-    room.hostClientId = member.clientId;
     this.audit({ roomId, action: "room:create", clientId: member.clientId });
-    return { room, member, hostSecret };
+    return { room, member };
   }
 
-  private addMember(room: RoomRecord, name: string, role: Role, clientId?: string): MemberRecord {
-    // 同一 clientId 重复加入：签发新令牌、作废旧令牌（同 P2 房间层的防双连接语义）。
-    for (const [tok, m] of room.members) {
-      if (m.clientId === clientId) room.members.delete(tok);
+  private issueMember(room: RoomRecord, identity: JoinIdentity): MemberRecord {
+    const username = identity.username?.trim() || null;
+    const isOwner = username === room.hostUser;
+    const previous = username
+      ? [...room.members.values()].find((member) => member.username === username)
+      : undefined;
+    if (previous && previous.expiresAt > this.now()) {
+      previous.role = isOwner ? "host" : "viewer";
+      previous.kind = "user";
+      previous.name = username!;
+      previous.expiresAt = this.now() + MEMBER_TOKEN_TTL_MS;
+      room.lastActiveAt = this.now();
+      return previous;
     }
-    room.lastActiveAt = this.now();
+    if (previous) room.members.delete(previous.token);
+    const guestSuffix = randomBytes(3).toString("hex").toUpperCase();
     const member: MemberRecord = {
-      token: randomUUID(),
-      clientId: (clientId ?? randomUUID().slice(0, 8)).slice(0, 32),
-      name: name.trim().slice(0, 24) || "Guest",
-      role,
+      token: randomBytes(32).toString("base64url"),
+      clientId: isOwner ? room.hostClientId : previous?.clientId ?? randomUUID(),
+      name: username ?? (identity.guestName?.trim().slice(0, 24) || `游客-${guestSuffix}`),
+      role: isOwner ? "host" : "viewer",
+      kind: username ? "user" : "guest",
+      username,
       expiresAt: this.now() + MEMBER_TOKEN_TTL_MS,
-      joinedAt: this.now(),
+      joinedAt: previous?.joinedAt ?? this.now(),
     };
     room.members.set(member.token, member);
+    room.lastActiveAt = this.now();
     return member;
   }
 
-  /** 加入房间：游客凭邀请码；登录用户（opts.asUser）凭房间号即可；房主凭 hostSecret 重建会话。 */
-  joinRoom(
-    roomId: string,
-    name: string,
-    opts: { inviteCode?: string; hostSecret?: string; asUser?: string } = {},
-  ): MemberRecord | null {
+  joinRoom(roomId: string, identity: JoinIdentity): JoinRoomResult {
     const room = this.rooms.get(roomId.toLowerCase());
-    if (!room) return null;
-    const isHost = opts.hostSecret !== undefined && opts.hostSecret === room.hostSecret;
-    // 未设置访问码的房间：任何人凭房间号即可加入。
-    // 已设置访问码：仅约束游客；登录用户凭账户身份放行（访问码 = 游客邀请码）。
-    if (!isHost && room.inviteCode !== null && !opts.asUser) {
-      if (!opts.inviteCode || opts.inviteCode.toUpperCase() !== room.inviteCode) return null;
+    if (!room) return { ok: false, reason: "room-not-found" };
+    if (!identity.username && room.inviteCode !== null) {
+      if (!identity.inviteCode) return { ok: false, reason: "invite-required" };
+      if (identity.inviteCode.trim().toUpperCase() !== room.inviteCode) return { ok: false, reason: "invite-invalid" };
     }
-    const member = this.addMember(room, name, isHost ? "host" : "viewer", isHost ? room.hostClientId : undefined);
+    const member = this.issueMember(room, identity);
     this.save();
-    this.audit({
-      roomId,
-      action: isHost ? "room:rejoin-host" : "room:join",
-      clientId: member.clientId,
-    });
-    return member;
+    this.audit({ roomId: room.roomId, action: member.role === "host" ? "room:enter-owner" : "room:enter", clientId: member.clientId });
+    return { ok: true, room, member };
   }
 
   /** 轮换邀请码：旧邀请码立即失效（=撤销尚未使用的邀请），在房成员不受影响。 */
@@ -397,6 +404,10 @@ export class RoomRegistry {
       this.audit({ roomId, action: "auth:token-expired", clientId: member.clientId });
       return null;
     }
+    const isOwner = member.username === room.hostUser;
+    member.role = isOwner ? "host" : "viewer";
+    member.kind = member.username ? "user" : "guest";
+    if (member.username) member.name = member.username;
     return member;
   }
 

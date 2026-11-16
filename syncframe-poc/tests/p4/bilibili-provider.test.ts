@@ -335,7 +335,7 @@ test("extractLoginCookie 提取 SESSDATA 等并拒绝缺失", async () => {
 
 function makeHost() {
   const registry = new RoomRegistry({});
-  const { room, member } = registry.createRoom("房主", "alice");
+  const { room, member } = registry.createRoom("alice", { roomName: "房主" });
   return { registry, roomId: room.roomId, host: member };
 }
 

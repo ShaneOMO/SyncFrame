@@ -51,7 +51,7 @@ function MediaList({
 }: {
   items: MediaListItem[];
   currentId: string;
-  /** 房主身份（决定空列表文案与删除按钮，与旧版一致）。 */
+  /** 房主权限由服务端会话决定。 */
   isHost: boolean;
   /** player 模式下房主可点击播放/添加（clock 模式禁用）。 */
   canControl: boolean;
@@ -217,7 +217,7 @@ function RoomPage() {
           {room.mode === "clock" ? " · clock" : ""}
         </Badge>
         <Badge variant={isHost ? "default" : "secondary"} className="rounded-full text-xs">
-          {isHost ? "房主" : "观众"}
+          {room.name} · {isHost ? "房主" : room.session.kind === "user" ? "登录成员" : "游客"}
         </Badge>
         <Badge
           variant="outline"
@@ -263,6 +263,7 @@ function RoomPage() {
             >
               {m.role === "host" && <Crown className="size-3 text-amber-500" />}
               {m.name}
+              {m.role !== "host" && <span className="text-muted-foreground">· {m.kind === "user" ? "成员" : "游客"}</span>}
             </Badge>
           ))}
         </span>
@@ -345,7 +346,7 @@ function RoomPage() {
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm">
-                在线成员 <span className="text-xs font-normal text-muted-foreground">房主 + 观众</span>
+                在线成员 <span className="text-xs font-normal text-muted-foreground">按账户身份区分</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -353,7 +354,8 @@ function RoomPage() {
                 {[
                   { label: "合计", value: ui.statTotal },
                   { label: "房主", value: ui.statHost },
-                  { label: "观众", value: ui.statGuest },
+                  { label: "成员", value: ui.statUser },
+                  { label: "游客", value: ui.statGuest },
                 ].map((s) => (
                   <div
                     key={s.label}

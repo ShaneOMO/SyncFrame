@@ -42,7 +42,7 @@ let created: CreatedRoom;
 /** host1 的账户令牌与用户令牌（provider 操作要求 X-User-Token = 房间创建者本人）。 */
 let hostUserToken: string;
 let hostProviderId = "";
-/** 房主当前有效成员令牌：同一身份重新加入会作废旧令牌（防双身份），后续用例跟随最新令牌。 */
+/** 房主当前成员令牌。 */
 let hostToken: string;
 
 function wsConnect(url: string): Promise<WebSocket> {
@@ -175,20 +175,25 @@ test("创建房间：返回房间号 + 邀请码 + 房主成员令牌", () => {
   assert.match(created.inviteCode, /^[A-Z2-9]{8}$/);
   assert.equal(created.role, "host");
   assert.ok(created.memberToken.length > 20);
-  assert.ok(created.hostSecret.length > 20);
+  assert.equal(created.kind, "user");
+  assert.equal(created.name, HOST_USER);
+  assert.ok(!("hostSecret" in created), "房主身份不得依赖浏览器持有的独立密钥");
 });
 
-test("加入房间：错误邀请码 → 401，且不暴露房间存在性", async () => {
+test("加入房间：游客访问码错误与房间不存在返回明确错误", async () => {
   const bad = await joinRoom(BASE, created.roomId, "小明", "XXXXXX");
-  assert.equal(bad.status, 401);
+  assert.equal(bad.status, 403);
   const noRoom = await joinRoom(BASE, "zzzzzz", "小明", created.inviteCode);
-  assert.equal(noRoom.status, 401);
+  assert.equal(noRoom.status, 404);
 });
 
 test("加入房间：正确邀请码 → 观众成员令牌（clientId 由服务端签发，重复加入各自独立）", async () => {
   const v1 = await joinRoom(BASE, created.roomId, "小红", created.inviteCode);
   assert.equal(v1.status, 200);
   assert.equal(v1.data.role, "viewer");
+  assert.equal(v1.data.kind, "guest");
+  assert.equal(v1.data.name, "小红");
+  assert.equal(v1.data.username, null);
   assert.ok(v1.data.clientId.length >= 8);
   const v2 = await joinRoom(BASE, created.roomId, "小红", created.inviteCode);
   assert.equal(v2.status, 200);
@@ -198,13 +203,31 @@ test("加入房间：正确邀请码 → 观众成员令牌（clientId 由服务
   assert.equal(auth1.status, 200);
 });
 
-test("房主可用 hostSecret 重建 host 会话（房主重连路径 S07 的 HTTP 侧）", async () => {
-  const rejoin = await joinRoom(BASE, created.roomId, "房主回来", undefined, created.hostSecret);
+test("房主只凭创建者账户重进，昵称不能伪造且无需游客访问码", async () => {
+  const rejoin = await joinRoom(BASE, created.roomId, "伪造昵称", undefined, hostUserToken);
   assert.equal(rejoin.status, 200);
   assert.equal(rejoin.data.role, "host");
-  assert.equal(rejoin.data.clientId, created.clientId, "重建会话应恢复同一 clientId（房主重认领）");
-  // 同一身份重新加入：旧令牌作废（防双身份），后续用例改用新令牌
+  assert.equal(rejoin.data.kind, "user");
+  assert.equal(rejoin.data.name, HOST_USER);
+  assert.equal(rejoin.data.username, HOST_USER);
+  assert.equal(rejoin.data.clientId, created.clientId);
   hostToken = rejoin.data.memberToken;
+  const session = await getJson(BASE, `/api/rooms/${created.roomId}/session`, hostToken);
+  assert.equal(session.status, 200);
+  assert.equal(session.data.role, "host");
+  assert.equal(session.data.name, HOST_USER);
+});
+
+test("登录成员与游客分轨显示；失效账户令牌不能降级成游客", async () => {
+  const accountToken = await loginUser(BASE, ADMIN_USER, ADMIN_PASS);
+  const member = await joinRoom(BASE, created.roomId, "游客假名", undefined, accountToken);
+  assert.equal(member.status, 200);
+  assert.equal(member.data.role, "viewer");
+  assert.equal(member.data.kind, "user");
+  assert.equal(member.data.name, ADMIN_USER);
+  assert.equal(member.data.username, ADMIN_USER);
+  const expired = await joinRoom(BASE, created.roomId, "不应成为游客", created.inviteCode, "invalid-user-token");
+  assert.equal(expired.status, 401);
 });
 
 test("WS 入场：无令牌 / 伪造令牌 → 拒绝；有效观众令牌 → welcome", async () => {
@@ -219,6 +242,8 @@ test("WS 入场：无令牌 / 伪造令牌 → 拒绝；有效观众令牌 → w
   assert.equal(welcome.t, "welcome");
   assert.equal(welcome.role, "viewer");
   assert.equal(welcome.you, v.data.clientId);
+  const roster = (welcome.members as { id: string; kind: string }[]).find((m) => m.id === v.data.clientId);
+  assert.equal(roster?.kind, "guest");
   ws.close();
 });
 
@@ -458,7 +483,7 @@ test("邀请码轮换：旧码立即失效，新码可加入；观众无权重�
   assert.match(newCode, /^[A-Z2-9]{8}$/);
   assert.notEqual(newCode, created.inviteCode);
   const withOld = await joinRoom(BASE, created.roomId, "旧码观众", created.inviteCode);
-  assert.equal(withOld.status, 401, "旧邀请码必须失效");
+  assert.equal(withOld.status, 403, "旧邀请码必须失效");
   const withNew = await joinRoom(BASE, created.roomId, "新码观众", newCode);
   assert.equal(withNew.status, 200, "新邀请码应可加入");
   // 后续用例若以邀请码加入，使用新码

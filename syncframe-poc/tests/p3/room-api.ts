@@ -19,13 +19,15 @@ export interface RoomMember {
   memberToken: string;
   clientId: string;
   role: "host" | "viewer";
+  kind: "user" | "guest";
+  name: string;
+  username: string | null;
   expiresAt: number;
 }
 
 export interface CreatedRoom extends RoomMember {
   roomId: string;
   inviteCode: string;
-  hostSecret: string;
 }
 
 export async function postJson(base: string, url: string, body: unknown, token?: string, extraHeaders: Record<string, string> = {}): Promise<{
@@ -72,11 +74,11 @@ export async function createUserAsAdmin(base: string, adminToken: string, userna
 }
 
 /** 创建房间：必须携带创建者账户的用户令牌（游客 401）。 */
-export function createRoom(base: string, name = "房主", userToken = "", clientId?: string): Promise<{
+export function createRoom(base: string, name = "房主", userToken = ""): Promise<{
   status: number;
   data: CreatedRoom;
 }> {
-  return postJson(base, "/api/rooms", { name, ...(clientId ? { clientId } : {}) }, userToken) as unknown as Promise<{
+  return postJson(base, "/api/rooms", { name }, userToken) as unknown as Promise<{
     status: number;
     data: CreatedRoom;
   }>;
@@ -87,13 +89,12 @@ export function joinRoom(
   roomId: string,
   name: string,
   inviteCode?: string,
-  hostSecret?: string,
+  userToken?: string,
 ): Promise<{ status: number; data: RoomMember & { error?: string } }> {
   return postJson(base, `/api/rooms/${encodeURIComponent(roomId)}/join`, {
     name,
     ...(inviteCode ? { inviteCode } : {}),
-    ...(hostSecret ? { hostSecret } : {}),
-  }) as unknown as Promise<{ status: number; data: RoomMember & { error?: string } }>;
+  }, userToken) as unknown as Promise<{ status: number; data: RoomMember & { error?: string } }>;
 }
 
 export interface SpawnedServer {
