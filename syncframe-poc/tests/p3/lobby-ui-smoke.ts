@@ -108,10 +108,12 @@ async function main(): Promise<void> {
     await authDialog.getByRole("button", { name: "登录", exact: true }).click();
     await host.getByRole("button", { name: ADMIN_USER }).waitFor({ timeout: 10_000 });
     check("登录后顶栏显示用户名", true);
-    check("管理员显示用户管理入口", await host.getByRole("button", { name: "用户管理" }).isVisible());
+    // 打开账户下拉菜单（头像 + 用户名 + 箭头）
+    await host.getByRole("button", { name: ADMIN_USER }).click();
+    check("管理员下拉菜单含用户管理入口", await host.getByRole("menuitem", { name: "用户管理" }).isVisible());
 
     // 账户设置：添加 OpenList provider（指向桩）
-    await host.getByRole("button", { name: ADMIN_USER }).click();
+    await host.getByRole("menuitem", { name: "账户设置" }).click();
     await host.waitForURL(/settings\.html/, { timeout: 10_000 });
     await host.getByRole("button", { name: "用户管理" }).waitFor();
     check("账户设置页打开（管理员含用户管理页签）", true);
@@ -180,7 +182,7 @@ async function main(): Promise<void> {
     await memberAuth.getByLabel("用户名").fill("member1");
     await memberAuth.getByLabel("密码").fill("memberpw123");
     await memberAuth.getByRole("button", { name: "登录", exact: true }).click();
-    await member.getByRole("button", { name: "member1", exact: true }).waitFor();
+    await member.getByRole("button", { name: /member1/ }).waitFor();
     await member.locator("div.border-b", { hasText: "UI房间" }).getByRole("button", { name: "立即加入" }).click();
     const memberJoin = member.getByRole("dialog");
     check("登录成员加入时锁定账户身份", await memberJoin.getByLabel("登录身份").isDisabled());

@@ -2,18 +2,19 @@
  * 大厅页：
  * - 房间列表：GET /api/rooms，15s 轮询刷新；行右侧「直接加入」预填加入弹窗；
  * - 「创建房间 / 加入房间」弹窗；创建需登录，房间名必填，可设置全实例唯一邀请码；
- * - 右上角用户按钮：未登录 → 登录弹窗；已登录 → 跳转设置页；管理员额外有「用户管理」；
+ * - 右上角账户区：未登录 → 登录按钮；已登录 → 头像下拉菜单（账户设置、管理员另有「用户管理」、退出登录）；
  * - 邀请链接 ?room=<id>&key=<code> 自动加入；成员令牌写入 sessionStorage 后跳房间页。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LogIn, Play, Plus, RefreshCw, Trash2, Users, Video } from "lucide-react";
+import { ChevronDown, LogIn, LogOut, Play, Plus, RefreshCw, Settings, Trash2, Users, Video } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { ToastProvider, useToast } from "@/components/toaster";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -277,16 +278,47 @@ function LobbyPage() {
   return (
     <div className="min-h-screen">
       <AppHeader>
-        {isAdmin && (
-          <Button variant="ghost" size="sm" onClick={() => (location.href = "/settings.html#users")}>
-            <Users className="size-3.5" />
-            用户管理
+        {user ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="gap-2 rounded-full pl-1 pr-2.5">
+                <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                  {user.username.slice(0, 1).toUpperCase()}
+                </span>
+                <span className="max-w-[8rem] truncate">{user.username}</span>
+                <ChevronDown className="size-3.5 text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onSelect={() => (location.href = "/settings.html")}>
+                <Settings className="size-4" />
+                账户设置
+              </DropdownMenuItem>
+              {isAdmin && (
+                <DropdownMenuItem onSelect={() => (location.href = "/settings.html#users")}>
+                  <Users className="size-4" />
+                  用户管理
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onSelect={() => {
+                  clearUser();
+                  location.href = "/lobby.html";
+                }}
+              >
+                <LogOut className="size-4" />
+                退出登录
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <Button variant="ghost" size="sm" onClick={() => setAuthOpen(true)}>
+            <LogIn className="size-3.5" />
+            登录
           </Button>
         )}
-        <Button variant="ghost" size="sm" onClick={() => (user ? (location.href = "/settings.html") : setAuthOpen(true))}>
-          <LogIn className="size-3.5" />
-          {user ? user.username : "登录"}
-        </Button>
       </AppHeader>
 
       <main className="mx-auto w-full max-w-2xl px-4 pb-24 pt-16 sm:pt-24">
