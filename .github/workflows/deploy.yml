@@ -18,5 +18,7 @@ jobs:
             set -e
             cd /opt/stacks/SyncFrame
             git pull
-            docker compose up -d --build
+            docker compose build --no-cache
+            docker compose up -d
             docker image prune -f
+            docker builder prune -f
