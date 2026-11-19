@@ -158,6 +158,19 @@ docker compose down             # 停止并删除容器
 docker compose up --build -d    # 改了代码后重新构建并启动
 ```
 
+**确认线上版本：**
+
+```bash
+curl http://localhost:7300/api/health
+# {"ok":true,"version":"0.1.0","commit":"550d970","builtAt":"2026-11-19T07:41:12Z", ...}
+```
+
+浏览器控制台直接输入 `__SYNCFRAME_BUILD__` 即可查看当前页面版本（`{ version, commit, builtAt }`），
+不会主动打印日志；容器启动日志里则有一行 `[SyncFrame] build ...`。
+
+版本信息由部署流水线通过 build-arg 注入（`GIT_COMMIT` / `BUILD_TIME`）；
+本地 `docker compose build` 不传则回退为 `dev`，可据此区分本地构建与线上构建。
+
 **部署注意：**
 
 - 对外端口改 `docker-compose.yml` 里 ports 的 `"7300:8787"` 映射

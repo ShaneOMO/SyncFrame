@@ -18,6 +18,12 @@ jobs:
             set -e
             cd /opt/stacks/SyncFrame
             git pull
+            # 版本信息：注入当前 commit 与构建时间，构建产物与 /api/health 都会带上，
+            # 出问题时看一眼控制台或 curl /api/health 就能确认线上跑的是哪一版。
+            GIT_COMMIT=$(git rev-parse --short HEAD)
+            BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            export GIT_COMMIT BUILD_TIME
+            echo "deploying $GIT_COMMIT built at $BUILD_TIME"
             # 复用本地层缓存：只有真正变化的层才重建，改业务代码不会再重跑 npm ci。
             # 不要用 --no-cache：它会让所有层每次重建（npm ci 必然全量重跑），
             # 而这些重建的层仍会写进 build cache，磁盘反而涨得更快。

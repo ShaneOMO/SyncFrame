@@ -20,6 +20,12 @@ services:
     build:
       context: .
       dockerfile: deploy/server.Dockerfile
+      args:
+        # 版本信息：部署时由流水线 export 传入；本地构建不传则回退为 dev。
+        # 之后可在浏览器控制台或 `curl /api/health` 看到 commit / 构建时间。
+        GIT_COMMIT: ${GIT_COMMIT:-dev}
+        BUILD_TIME: ${BUILD_TIME:-}
+        APP_VERSION: ${APP_VERSION:-0.1.0}
     environment:
       SERVER_PORT: "8787"
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}

@@ -1,5 +1,16 @@
 /// <reference types="vite/client" />
 
+/** 构建时注入的版本信息（见 src/build-info.ts 与 deploy/server.Dockerfile）。 */
+interface ImportMetaEnv {
+  readonly VITE_APP_VERSION?: string;
+  readonly VITE_GIT_COMMIT?: string;
+  readonly VITE_BUILD_TIME?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
 declare module "*.wasm?url" {
   const src: string;
   export default src;
