@@ -18,7 +18,14 @@ jobs:
             set -e
             cd /opt/stacks/SyncFrame
             git pull
-            docker compose build --no-cache
+            # 复用本地层缓存：只有真正变化的层才重建，改业务代码不会再重跑 npm ci。
+            # 不要用 --no-cache：它会让所有层每次重建（npm ci 必然全量重跑），
+            # 而这些重建的层仍会写进 build cache，磁盘反而涨得更快。
+            # 需要刷新基础镜像时，手动执行一次 `docker compose build --pull`
+            # （不在每次部署里加 --pull，避免 registry 不稳定时直接部署失败）。
+            docker compose build
             docker compose up -d
             docker image prune -f
-            docker builder prune -f
+            # 只清理 7 天未被使用的构建缓存，保留近期可复用的层；
+            # 每次构建后全量 prune 等于让下一次部署再次冷构建。
+            docker builder prune -f --filter until=168h
