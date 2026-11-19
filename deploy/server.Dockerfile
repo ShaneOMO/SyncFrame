@@ -6,15 +6,23 @@
 #   - 前端：仅 Vite 构建产物 dist
 #   - 后端：仅 @syncframe/server 及其 workspace 依赖的 prod node_modules（tsx 为生产依赖）
 #   - 运行时基础：alpine + apk nodejs，不含 npm/yarn/corepack（node:22-alpine 约 140MB+ 的主要来源）
+#
+# 层缓存策略：依赖清单与源码分两次 COPY —— 日常改业务代码不会触发 npm ci 重装，
+# 只有 package.json / package-lock.json 变动才会重装依赖。
+# 注意：这里刻意不使用 `RUN --mount=type=cache,target=/root/.npm`。npm cache clean 与
+# cache mount 组合会在部分 Linux 文件系统上报 ENOTEMPTY 导致构建失败（曾导致线上部署失败），
+# 层缓存已经足够避免重复安装，不引入额外失败面。
 
 # ---------- 阶段 1：构建前端产物 ----------
 FROM node:22-alpine AS build
 WORKDIR /app
 
-# 只拷贝依赖清单，最大化利用构建缓存
+# 第一步只拷贝依赖清单（package.json / lockfile），不拷贝源码：
+# 源码改动不会改变这一层，npm ci 层才能稳定复用缓存。
 COPY syncframe-poc/package.json syncframe-poc/package-lock.json syncframe-poc/tsconfig.base.json ./
-COPY syncframe-poc/packages ./packages
-COPY syncframe-poc/apps/web ./apps/web
+COPY syncframe-poc/packages/sync-protocol/package.json ./packages/sync-protocol/
+COPY syncframe-poc/packages/openlist-adapter/package.json ./packages/openlist-adapter/
+COPY syncframe-poc/apps/web/package.json ./apps/web/
 
 # npm 网络偶发 ECONNRESET（部署服务器到 registry 链路不稳）：加重试参数 + 整体重试 3 次
 # 另：lockfile 在 Windows 上生成，npm ci 在 alpine 下会漏装 musl 原生绑定（npm/cli#4828），
@@ -25,19 +33,28 @@ RUN npm config set fetch-retries 5 fetch-retry-mintimeout 20000 fetch-retry-maxt
          ver=$(node -p "require('$pkg/package.json').version"); \
          npm i --no-save --no-audit --no-fund "$pkg-linux-x64-musl@$ver" || exit 1; \
        done \
-    && node -e "require('lightningcss'); require('@tailwindcss/oxide')" \
-    && npm run build -w @syncframe/web
+    && node -e "require('lightningcss'); require('@tailwindcss/oxide')"
+
+# 依赖装好之后再拷源码：改代码只会重建这两层 + build 层，不会重跑 npm ci
+COPY syncframe-poc/packages ./packages
+COPY syncframe-poc/apps/web ./apps/web
+
+RUN npm run build -w @syncframe/web
 
 # ---------- 阶段 2：安装 server 生产依赖（含 tsx 运行时） ----------
 FROM node:22-alpine AS deps
 WORKDIR /app
 
+# 同样只拷依赖清单；源码在阶段 3 直接从构建上下文拷贝，这里不需要
 COPY syncframe-poc/package.json syncframe-poc/package-lock.json ./
-COPY syncframe-poc/packages ./packages
-COPY syncframe-poc/apps/server ./apps/server
+COPY syncframe-poc/packages/sync-protocol/package.json ./packages/sync-protocol/
+COPY syncframe-poc/packages/openlist-adapter/package.json ./packages/openlist-adapter/
+COPY syncframe-poc/apps/server/package.json ./apps/server/
 
 # 只装 server workspace 的生产依赖（含 openlist-adapter / sync-protocol），
-# 不含 vite / typescript / playwright 等 devDependencies，也不装 web 的依赖
+# 不含 vite / typescript / playwright 等 devDependencies，也不装 web 的依赖。
+# node_modules/@syncframe/* 是指向 ../packages/* 的相对软链，目标源码在阶段 3 才落盘，
+# 因此这里不需要源码即可完成安装。
 RUN npm config set fetch-retries 5 fetch-retry-mintimeout 20000 fetch-retry-maxtimeout 120000 \
     && for i in 1 2 3; do npm ci --no-audit --no-fund --omit=dev -w @syncframe/server && break || { [ "$i" = 3 ] && exit 1; sleep 15; }; done \
     && npm cache clean --force
