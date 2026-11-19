@@ -39,6 +39,15 @@ RUN npm config set fetch-retries 5 fetch-retry-mintimeout 20000 fetch-retry-maxt
 COPY syncframe-poc/packages ./packages
 COPY syncframe-poc/apps/web ./apps/web
 
+# 版本信息由 CI 通过 build-arg 传入（镜像内不含 .git，读不到 commit）。
+# 放在这里而不是文件开头：只有下面这一层会随 commit 变化，npm ci 层仍可复用。
+ARG GIT_COMMIT=dev
+ARG BUILD_TIME=
+ARG APP_VERSION=0.1.0
+ENV VITE_GIT_COMMIT=$GIT_COMMIT \
+    VITE_BUILD_TIME=$BUILD_TIME \
+    VITE_APP_VERSION=$APP_VERSION
+
 RUN npm run build -w @syncframe/web
 
 # ---------- 阶段 2：安装 server 生产依赖（含 tsx 运行时） ----------
@@ -77,6 +86,14 @@ COPY --from=build /app/apps/web/dist ./apps/web/dist
 ENV SERVER_PORT=8787
 ENV WEB_DIST=/app/apps/web/dist
 ENV DATA_DIR=/app/data
+
+# 运行时版本信息（启动日志 + /api/health 返回），与前端注入的 VITE_* 同源
+ARG GIT_COMMIT=dev
+ARG BUILD_TIME=
+ARG APP_VERSION=0.1.0
+ENV GIT_COMMIT=$GIT_COMMIT \
+    BUILD_TIME=$BUILD_TIME \
+    APP_VERSION=$APP_VERSION
 EXPOSE 8787
 
 # 非 root 运行：容器被攻破时影响面更小；/app/data 需对 node 用户可写。

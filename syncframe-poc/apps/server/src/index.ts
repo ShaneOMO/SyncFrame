@@ -75,6 +75,17 @@ import { prepareBiliCredential } from "./bilibili-refresh.ts";
 
 const PORT = Number(process.env.SERVER_PORT ?? 8787);
 
+// 构建信息：由镜像构建时的 build-arg 注入（见 deploy/server.Dockerfile），
+// 本地 `tsx` 直跑时回退为 dev。启动打印一行 + `/api/health` 暴露，便于确认线上版本。
+const BUILD = {
+  version: process.env.APP_VERSION ?? "dev",
+  commit: process.env.GIT_COMMIT ?? "dev",
+  builtAt: process.env.BUILD_TIME ?? "",
+};
+console.log(
+  `[SyncFrame] build ${BUILD.version} @ ${BUILD.commit}${BUILD.builtAt ? ` (${BUILD.builtAt})` : ""}`,
+);
+
 // P4：账户系统。管理员由环境变量初始化（注册接口已关闭）；
 // OpenList / Bilibili 凭据不再来自环境变量，全部由各账户在 provider 配置中自行保存。
 // 持久化：账户与房间落盘 DATA_DIR（默认 ./data，Docker 挂卷），重启保留。
@@ -1293,6 +1304,9 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/health") {
       sendJson(res, 200, {
         ok: true,
+        version: BUILD.version,
+        commit: BUILD.commit,
+        builtAt: BUILD.builtAt || null,
         rooms: roomManager.roomCount(),
         registryRooms: registry.roomCount(),
         hasAdmin: process.env.ADMIN_USERNAME ? accounts.isAdmin(process.env.ADMIN_USERNAME.trim()) : false,
