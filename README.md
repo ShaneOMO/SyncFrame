@@ -1,186 +1,213 @@
 # SyncFrame
 
-基于 **Movi Player** 的多人同步观影室。
-房主添加视频（OpenList 媒体库 / B 站 / 直链），观众通过邀请链接进房，全房间播放/暂停/进度/倍速自动同步；
-B 站登录、续期与 playurl 解析由现有服务端按请求处理，完整凭据只保存在登录用户的浏览器；视频字节只能由浏览器直连 CDN，找不到可用直连节点时明确失败，绝不回落到云端代理。
+基于 **Movi Player** 的多人同步观影室。房主添加直链、B 站或 OpenList 影片，观众通过邀请链接进房，播放、暂停、进度和倍速由房主统一控制。
 
 | 大厅 | 观影房间 |
 | --- | --- |
-| ![大厅](shot-lobby.png) | ![房间](shot-room.png) |
+| ![SyncFrame 大厅](shot-lobby.png) | ![SyncFrame 观影房间](shot-room.png) |
 
-## 界面导览
+## 按界面操作
 
-**大厅（`/` → `lobby.html`）**
+### 1. 登录并创建房间
 
-- 顶部标语与「同步房间」列表：展示本实例当前活跃的房间，可直接加入
-- 「创建房间」：登录用户填写昵称即可成为房主（游客不可用）
-- 「加入房间」：只输入全实例唯一的邀请码；无邀请码的公开房间可从列表直接进入；更常见的做法是直接点开房主分享的邀请链接自动进房
+1. 打开 SyncFrame 大厅，点击右上角 **「登录」**。
+2. 输入管理员分配的账户和密码。未登录时点击 **「创建房间」** 也会打开登录窗口。
+3. 点击大厅的 **「创建房间」**。
+4. 在弹窗中填写 **房间名**。
+5. 默认会为房间设置邀请码：可以留空自动生成，也可以填写 4–16 位字母或数字。取消勾选 **「设置邀请码」** 可创建公开房间。
+6. 点击弹窗底部的 **「创建房间」**，进入观影房间并成为房主。
 
-**观影房间（`room.html`）**
+大厅的 **「进行中的房间」** 会显示房间名、房主、在线人数和视频数量，点击 **「刷新」** 可更新列表。公开房间可直接加入；自己的房间无需填写邀请码。
 
-- 顶栏：房间名、房主/登录成员/游客身份、连接状态、当前播放来源，以及昵称菜单、邀请、退出房间
-- 邀请链接：一键复制；「重置链接」让旧链接立即失效（已加入成员不受影响）
-- 播放器：房主统一控制播放/暂停/进度/倍速，观众自动跟随
-- 播放列表：点击条目即全房间切换播放
-- 添加影片（仅房主）：弹窗内四种方式——直链、B 站链接（BV / av / ep / ss）、OpenList 路径、OpenList 媒体库浏览（目录、搜索、分页）
-- OpenList 选片面板：房主可直接在房间内浏览媒体库并添加
+### 2. 邀请朋友
 
-## 权限模型
+进入房间后，点击右上角 **「邀请」** 展开邀请链接：
 
-- **游客（无需账户）**：凭邀请链接 / 邀请码加入受保护房间，或直接进入公开房间；不能创建房间、不能配置 provider；名册明确标记为「游客」
-- **用户（登录）**：以账户用户名加入并标记为「登录成员」；可创建房间，创建者每次凭账户重进都自动恢复「房主」身份且无需邀请码，其他登录用户与游客一样需要邀请码；在「账户设置」（顶栏昵称 → `/settings.html`）中保存自己的 OpenList 凭据（服务端 `./data`，对外不回显）；**B 站功能仅限登录用户**，完整可续期凭据只保存在本浏览器（localStorage），服务器不落盘；游客不能使用 B 站功能
-- **管理员**：由部署时的环境变量初始化，**注册已关闭**——全部账户由管理员创建 / 删除 / 重置密码
-- 房间的 OpenList 浏览/添加只允许使用**房间创建者本人**的 provider
+- 点击 **「复制链接」**，把完整链接发给朋友；对方打开后会自动进房。
+- 点击 **「重置链接」** 可生成新邀请码，旧链接立即失效，已在房间内的成员不受影响。
 
-## 功能
+朋友也可以在大厅点击 **「加入房间」**，输入房主提供的邀请码。游客可填写昵称，留空则由系统生成；登录用户使用账户名。随后点击弹窗中的 **「加入房间」**。
 
-- **同步房间**：登录用户创建房间、分享邀请链接，游客点开即进房
-- **播放列表**：房主可添加直链视频、粘贴 B 站链接（BV 号 / av 号 / 番剧 ep、ss），按 OpenList 路径添加，或在媒体库浏览器中点选；点击条目即全房间切换播放
-- **账户与 provider**：登录后在账户设置页配置自己的 OpenList provider；B 站完整凭据由每个登录用户的浏览器单独保存（扫码），服务器不保存、不共享，游客不可使用
-- **B 站画质与续期**：必须登录，按各自账号的上限解析；参考 bili-sync 保存 SESSDATA、bili_jct、buvid3、DedeUserID 与 refresh_token，每 12 小时检查并按官方流程自动续期，尽量减少重复扫码；仅播放允许浏览器跨域直连的 CDN 节点，不能直连时提示失败，不使用云端代理
-- **移动端自适应**：窄屏单列布局、防 iOS 输入聚焦缩放、加大点按目标
-- **精同步**：时钟偏移估计 + 漂移纠偏，播放/暂停/seek/倍速由房主统一控制，观众自动跟随
-- **安全模型**：账户身份与房间角色分离，成员令牌鉴权、媒体注册为不透明 mediaId、OpenList 短期票据授权（票据绑定已解析地址，URL 不含凭证）、邀请链接可随时重置
+### 3. 添加并播放影片
 
-## 仓库结构
+只有房主可以添加影片、切换播放列表和控制同步播放。在右侧 **「播放列表」** 卡片中点击 **「＋ 添加影片」**，通过弹窗选择以下来源。
 
-```text
-SyncFrame/
-├── syncframe-poc/            # 全部代码（pnpm workspaces：apps + packages + tests）
-│   ├── apps/web/             # Vite 前端：入口 /（重定向至大厅）· 大厅 lobby.html · 房间 room.html · 账户设置 settings.html
-│   ├── apps/server/          # Node 后端：REST 鉴权 + WebSocket 同步房间 + provider 媒体解析 + 静态资源托管
-│   ├── packages/sync-protocol/# 同步协议包（时钟偏移、跟随纠偏、消息校验）
-│   ├── packages/openlist-adapter/ # OpenList API 适配器
-│   └── tests/                # 自动化测试（协议仿真 / 安全 / e2e / UI 冒烟 / provider 单测 / 移动端检查）
-├── deploy/server.Dockerfile  # 单容器镜像（前端构建 + 后端运行，单端口）
-├── docker-compose.yml        # 一键部署（单个服务，端口映射给自行反向代理）
-├── scripts/                  # 本地开发辅助脚本
-│   └── dev.bat               # Windows 一键拉起后端 + 前端开发服务器（等价于方式一的两个终端）
-└── .github/workflows/        # CI/CD（push 到 main 自动 SSH 到服务器 git pull + 重建容器）
-```
+#### 直链
 
-## 快速开始
+1. 选择 **「直链」** 页签。
+2. 可选填视频名称，粘贴以 `http://` 或 `https://` 开头的视频地址。
+3. 点击 **「添加到播放列表」**。
+4. 关闭弹窗，在播放列表中点击该条目或 **「播放」**。
 
-前置：Node.js 22+ 与 pnpm（`npm i -g pnpm` 安装；本地调试）；Docker 与 Docker Compose v2（容器部署）。
+#### B 站链接
 
-### 方式一：pnpm 本地调试
+1. 先在 **「账户设置 → 视频源 → 哔哩哔哩」** 扫码登录 B 站。
+2. 回到添加影片弹窗，选择 **「B 站链接」** 页签。
+3. 粘贴 B 站链接或 BV / av 号，也支持 ep / ss 番剧链接。
+4. 点击 **「添加到播放列表」**，再关闭弹窗开播。
+
+B 站功能仅限 SyncFrame 登录用户。完整凭据只保存在当前浏览器，服务端仅按请求进行扫码、续期和播放地址解析，不保存凭据，也不通过云端代理视频字节。
+
+#### OpenList 媒体库或路径
+
+先在 **「账户设置 → 视频源」** 中保存自己的 OpenList 名称、地址、用户名和密码，然后打开添加影片弹窗：
+
+- **「OpenList 媒体库」**：选择视频源，通过目录、上级目录、文件名搜索和分页查找视频，点击视频条目或 **「添加」**。
+- **「OpenList 路径」**：选择视频源，输入完整文件路径，例如 `/movies/a.mkv`，再点击 **「添加到播放列表」**。
+
+从媒体库选中的视频会加入播放列表并开始加载。OpenList 浏览和添加使用房间创建者本人配置的视频源；未配置 OpenList 时不会显示这两个页签。
+
+### 4. 同步观影与房间管理
+
+- **房主**：使用播放器控制播放、暂停、进度和倍速；点击播放列表条目切换全房间片源，点击垃圾桶图标移除条目。
+- **观众**：播放器自动跟随房主。如果浏览器阻止自动播放，点击播放器中的 **「点击加入播放」**。
+- **在线状态**：房间名旁显示身份、连接状态和当前片源；右侧统计合计、房主、成员和游客人数。
+- **修改房间名**：房主点击房间名旁的铅笔图标。
+- **删除房间**：房主点击右上角 **「删除房间」**；删除后无法恢复，所有成员都会被请出。
+- **离开房间**：点击右上角 **「退出房间」** 返回大厅。
+
+房间会话保存在浏览器会话存储中；会话过期后，返回大厅重新加入即可。
+
+## 账户与视频源
+
+- **游客**：无需账户，可通过邀请链接或邀请码进房观看，也可直接进入公开房间；不能创建房间或配置视频源。
+- **登录用户**：可以创建房间，并管理自己的 OpenList 和 B 站视频源。
+- **管理员**：通过环境变量初始化。注册已关闭，其他账户由管理员在 **「用户管理」** 中创建、删除或重置密码。
+
+点击大厅右上角的用户名，可进入 **「账户设置」**；管理员还可进入 **「用户管理」**。OpenList 凭据保存在服务端；B 站完整凭据保存在当前浏览器的 `localStorage` 中，更换浏览器或设备后需要重新扫码。
+
+## 本地运行
+
+### 环境要求
+
+- Node.js 22+
+- pnpm（可执行 `npm install -g pnpm` 安装）
+
+### 安装与配置
 
 ```bash
 cd syncframe-poc
 pnpm install
-cp .env.example .env        # Windows: copy .env.example .env
+cp .env.example .env
 ```
 
-编辑 `syncframe-poc/.env`，设置管理员账户（**必填，注册已关闭**）：
+Windows 可使用：
 
-| 变量 | 说明 |
-| --- | --- |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 启动时初始化的管理员账户；之后用它登录，在「账户管理」中创建其他账户 |
+```bat
+copy .env.example .env
+```
 
-> OpenList 凭据**不在 env 配置**：各账户登录后在账户设置页（顶栏昵称 → 账户设置）自行填写，凭据只存服务端。  
-> **B 站凭据**：SyncFrame 登录用户在账户设置页「哔哩哔哩」扫码，完整可续期凭据只保存在当前浏览器（localStorage）。添加或播放时经 `X-Bili-Credential` 请求头传给现有服务端，续期或解析后立即丢弃；服务器不保存、不跨用户共享。系统每 12 小时检查一次，按 bili-sync 同款官方流程自动续期；换设备或凭据最终失效时才需重新扫码。游客不能使用 B 站功能。
->
-> 数据持久化：账户（含 OpenList 凭据）与房间写入 `./data/`（`DATA_DIR` 可改，已 gitignore），重启保留；删除该目录即重置全部数据。用户令牌仍为内存态，重启后需重新登录。
+编辑 `syncframe-poc/.env`，设置管理员账户：
 
-**启动（两个终端）：**
+```dotenv
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=请替换为强密码
+```
+
+### 启动
+
+在 `syncframe-poc` 目录分别打开两个终端：
 
 ```bash
-# 终端 1：后端（REST + WS 同步房间 + OpenList 代理），默认 :8787
+# 终端 1：后端，默认端口 8787
 pnpm run p1:server
+```
 
-# 终端 2：前端 Vite 开发服务器，默认 :5173（/api、/ws 已代理到 8787）
+```bash
+# 终端 2：前端，默认端口 5173
 pnpm run p1:web
 ```
 
-打开 http://localhost:5173/ → 登录 → 创建房间 → 把邀请链接发给观众即可同步观影。
+浏览器打开 <http://localhost:5173/>，然后按上方步骤创建或加入房间。
 
-Windows 下也可以直接双击 `scripts/dev.bat`，会自动开两个窗口分别跑后端和前端。
+Windows 也可以双击 `scripts/dev.bat`，自动打开后端和前端两个窗口。
 
-**开发：**
+## Docker 部署
 
-- Vite 自带 HMR，改前端即热更新；代理配置在 `apps/web/vite.config.ts`
-- 改后端代码用 `pnpm exec tsx watch --env-file-if-exists=.env apps/server/src/index.ts` 自动重启
-- 类型检查：`pnpm run typecheck`
-- 同步协议仿真：`pnpm run p2:sim`；安全测试：`pnpm run p3:security`
-- 前端冒烟测试：`pnpm run p3:ui`（需本机 Chrome/Edge）
-- provider 单测：`pnpm run p4:unit`；移动端布局检查：`pnpm run p4:mobile`（需本机 Chrome/Edge）
+### 环境要求
 
-### 方式二：Docker 构建并部署
+- Docker
+- Docker Compose v2
 
-在**仓库根目录**（含 `docker-compose.yml` 的目录）执行：
+在仓库根目录创建 `.env`：
+
+```dotenv
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=请替换为强密码
+```
+
+准备数据目录。Linux 首次部署时需要让容器内的 `node` 用户（UID 1000）可写：
+
+```bash
+mkdir -p syncframe-poc/data
+sudo chown -R 1000:1000 syncframe-poc/data
+```
+
+启动服务：
 
 ```bash
 docker compose up --build -d
 ```
 
-构建并启动单个容器，然后浏览器打开 http://localhost:7300/（自动进入大厅）。
+浏览器打开 <http://localhost:7300/>。
 
-管理员账户通过环境变量注入（**不写入镜像**）。在仓库根目录建一个 `.env`
-（compose 会自动读取，该文件已被 gitignore）：
+常用命令：
 
 ```bash
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=your_strong_password
+docker compose ps             # 查看状态
+docker compose logs -f server # 查看日志
+docker compose up --build -d  # 修改代码后重新构建
+docker compose down           # 停止并删除容器
 ```
 
-或直接 export 后运行 `docker compose up --build -d`。
-启动后用该管理员登录，在「账户管理」中创建观影账户；账户再自行配置自己的 OpenList / Bilibili provider。
+账户、视频源配置和房间数据持久化在 `syncframe-poc/data/syncframe.db`。该文件包含敏感凭据，请妥善备份并限制访问权限；删除数据文件会重置数据。
 
-**单容器架构**（不内置 nginx，只暴露一个端口供自行反向代理）：
+### 反向代理
 
-```text
-浏览器 ──→ server（node:22-alpine，单端口 :8787，镜像内已构建前端产物）
-            ├─ 静态托管 Vite 构建产物（/ 自动进入大厅）
-            ├─ /api 账户/房间鉴权 + provider 媒体解析 + 媒体授权
-            └─ /ws  WebSocket 同步房间（长连接）
-```
+容器内由同一个 Node 服务提供前端、`/api` 和 `/ws`，默认映射为宿主机 `7300` → 容器 `8787`。如需修改对外端口，请调整 `docker-compose.yml` 中的端口映射。
 
-镜像在同一阶段完成前端构建（`pnpm --filter @syncframe/web build`），
-后端经 `WEB_DIST` 环境变量托管构建产物（`deploy/server.Dockerfile` 已内置）。
+公网部署请使用 Caddy、Traefik 或 Nginx 配置域名和 HTTPS，并确保支持 WebSocket Upgrade。B 站凭据会在浏览器与服务端之间传输，公网环境必须启用 HTTPS。
 
-**反向代理（由部署者自行设置）**：编排只把宿主机 `7300` 映射到容器 `8787`，
-不内置任何 Web 代理。域名 / HTTPS / 访问控制请在最外层自行反代
-（Caddy / Traefik / Nginx 均可），注意 `/ws` 需要 Upgrade 长连接。
 Caddy 示例：
 
-```
+```caddy
 syncframe.example.com {
     reverse_proxy localhost:7300
 }
 ```
 
-**常用命令：**
-
-```bash
-docker compose logs -f server   # 看日志
-docker compose ps               # 查看容器状态
-docker compose down             # 停止并删除容器
-docker compose up --build -d    # 改了代码后重新构建并启动
-```
-
-**确认线上版本：**
+健康检查：
 
 ```bash
 curl http://localhost:7300/api/health
-# {"ok":true,"version":"0.1.0","commit":"550d970","builtAt":"2026-11-19T07:41:12Z", ...}
 ```
 
-浏览器控制台直接输入 `__SYNCFRAME_BUILD__` 即可查看当前页面版本（`{ version, commit, builtAt }`），
-不会主动打印日志；容器启动日志里则有一行 `[SyncFrame] build ...`。
+## 开发检查
 
-版本信息由部署流水线通过 build-arg 注入（`GIT_COMMIT` / `BUILD_TIME`）；
-本地 `docker compose build` 不传则回退为 `dev`，可据此区分本地构建与线上构建。
+以下命令均在 `syncframe-poc` 目录执行：
 
-**部署注意：**
+```bash
+pnpm run typecheck   # 类型检查
+pnpm run p2:sim      # 同步协议仿真
+pnpm run p3:security # 安全测试
+pnpm run p3:ui       # 大厅 UI 冒烟测试，需要本机 Chrome / Edge
+pnpm run p4:unit     # Provider 与持久化单元测试
+pnpm run p4:mobile   # 移动端布局检查，需要本机 Chrome / Edge
+```
 
-- 对外端口改 `docker-compose.yml` 里 ports 的 `"7300:8787"` 映射
-- 反向代理与 HTTPS 在最外层配置（见上）；**B 站凭证会在浏览器与服务器之间传输，公网部署必须启用 HTTPS**
-- `./data` 卷持久化账户/房间（含 OpenList 凭据）：重启容器不丢数据，**注意备份与权限**（不要挂到公共目录）；删除卷内容即重置
-- 容器以 `node`（uid 1000）运行：首次部署前需 `mkdir -p data && sudo chown -R 1000:1000 data`，否则账户/房间无法落盘
-- 容器带 `restart: unless-stopped`，宿主机重启后自动拉起
+## 仓库结构
 
-**自动部署（GitHub Actions）：**
-
-`.github/workflows/deploy.yml` 在 push 到 `main` 时通过 SSH 登录服务器执行 `git pull && docker compose up -d --build`。
-需要在仓库 Settings → Secrets and variables → Actions 配置 `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY`
-（专用部署密钥，公钥追加到服务器 `~/.ssh/authorized_keys`；脚本内服务器路径为 `/opt/stacks/SyncFrame`）。
+```text
+SyncFrame/
+├── syncframe-poc/
+│   ├── apps/web/                # Vite 前端：大厅、房间、账户设置
+│   ├── apps/server/             # Node 后端：REST、WebSocket、媒体解析
+│   ├── packages/sync-protocol/  # 同步协议与漂移纠偏
+│   ├── packages/openlist-adapter/
+│   └── tests/                   # 协议、安全、E2E、UI 与移动端测试
+├── deploy/server.Dockerfile     # 前端构建与后端运行的单容器镜像
+├── docker-compose.yml           # 单服务部署
+├── scripts/dev.bat              # Windows 本地启动脚本
+├── shot-lobby.png               # 大厅截图
+└── shot-room.png                # 房间截图
+```
