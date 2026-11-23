@@ -5,3 +5,6 @@ packages:
 
 allowBuilds:
   esbuild: true
+
+overrides:
+  rollup: 4.65.1
