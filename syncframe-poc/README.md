@@ -1,6 +1,6 @@
 # SyncFrame 代码目录
 
-多人同步观影室全部代码（npm workspaces：apps + packages + tests）。
+多人同步观影室全部代码（pnpm workspaces：apps + packages + tests）。
 运行、部署与环境变量说明见仓库根目录的 [README](../README.md)。
 
 ## 结构

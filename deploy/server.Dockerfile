@@ -7,40 +7,40 @@
 #   - 后端：仅 @syncframe/server 及其 workspace 依赖的 prod node_modules（tsx 为生产依赖）
 #   - 运行时基础：alpine + apk nodejs，不含 npm/yarn/corepack（node:22-alpine 约 140MB+ 的主要来源）
 #
-# 层缓存策略：依赖清单与源码分两次 COPY —— 日常改业务代码不会触发 npm ci 重装，
-# 只有 package.json / package-lock.json 变动才会重装依赖。
-# 注意：这里刻意不使用 `RUN --mount=type=cache,target=/root/.npm`。npm cache clean 与
-# cache mount 组合会在部分 Linux 文件系统上报 ENOTEMPTY 导致构建失败（曾导致线上部署失败），
-# 层缓存已经足够避免重复安装，不引入额外失败面。
+# 包管理用 pnpm（packageManager 字段锁定版本，corepack 自动激活）：
+#   - lockfile 正确记录全部平台 optional 依赖，无需 npm 时代的 musl 原生绑定补装 hack
+#   - 阶段 2 用 --filter 只装 server 的生产依赖，比全量 npm ci --omit=dev 快且小
+#
+# 层缓存策略：依赖清单与源码分两次 COPY —— 日常改业务代码不会触发重装依赖，
+# 只有 package.json / pnpm-lock.yaml 变动才会重装。
+# 注意：不使用 RUN --mount=type=cache（npm cache clean 与 cache mount 组合在部分
+# 文件系统上报 ENOTEMPTY 导致构建失败，曾导致线上部署失败），层缓存已足够。
 
 # ---------- 阶段 1：构建前端产物 ----------
 FROM node:22-alpine AS build
 WORKDIR /app
 
+RUN corepack enable
+
 # 第一步只拷贝依赖清单（package.json / lockfile），不拷贝源码：
-# 源码改动不会改变这一层，npm ci 层才能稳定复用缓存。
-COPY syncframe-poc/package.json syncframe-poc/package-lock.json syncframe-poc/tsconfig.base.json ./
+# 源码改动不会改变这一层，install 层才能稳定复用缓存。
+COPY syncframe-poc/package.json syncframe-poc/pnpm-lock.yaml syncframe-poc/pnpm-workspace.yaml syncframe-poc/tsconfig.base.json ./
 COPY syncframe-poc/packages/sync-protocol/package.json ./packages/sync-protocol/
 COPY syncframe-poc/packages/openlist-adapter/package.json ./packages/openlist-adapter/
 COPY syncframe-poc/apps/web/package.json ./apps/web/
 
-# npm 网络偶发 ECONNRESET（部署服务器到 registry 链路不稳）：加重试参数 + 整体重试 3 次
-# 另：lockfile 在 Windows 上生成，npm ci 在 alpine 下会漏装 musl 原生绑定（npm/cli#4828），
-# 显式按已装版本补齐 lightningcss / tailwind oxide 的 musl 绑定并验证可加载。
-RUN npm config set fetch-retries 5 fetch-retry-mintimeout 20000 fetch-retry-maxtimeout 120000 \
-    && for i in 1 2 3; do npm ci --no-audit --no-fund && break || { [ "$i" = 3 ] && exit 1; sleep 15; }; done \
-    && for pkg in lightningcss @tailwindcss/oxide; do \
-         ver=$(node -p "require('$pkg/package.json').version"); \
-         npm i --no-save --no-audit --no-fund "$pkg-linux-x64-musl@$ver" || exit 1; \
-       done \
-    && node -e "require('lightningcss'); require('@tailwindcss/oxide')"
+# 部署服务器到 registry 链路不稳：整体重试 3 次。
+# pnpm 的 lockfile 会装齐当前平台（linux-x64-musl）的 optional 原生绑定，
+# Windows 上生成的 lockfile 也无需像 npm 那样手动补 lightningcss / tailwind oxide。
+RUN for i in 1 2 3; do pnpm install --frozen-lockfile && break || { [ "$i" = 3 ] && exit 1; sleep 15; }; done \
+    && cd apps/web && node -e "const r=require('module').createRequire(require.resolve('tailwindcss/package.json')); r('@tailwindcss/oxide'); console.log('oxide ok')" && cd /app
 
-# 依赖装好之后再拷源码：改代码只会重建这两层 + build 层，不会重跑 npm ci
+# 依赖装好之后再拷源码：改代码只会重建这两层 + build 层，不会重装依赖
 COPY syncframe-poc/packages ./packages
 COPY syncframe-poc/apps/web ./apps/web
 
 # 版本信息由 CI 通过 build-arg 传入（镜像内不含 .git，读不到 commit）。
-# 放在这里而不是文件开头：只有下面这一层会随 commit 变化，npm ci 层仍可复用。
+# 放在这里而不是文件开头：只有下面这一层会随 commit 变化，install 层仍可复用。
 ARG GIT_COMMIT=dev
 ARG BUILD_TIME=
 ARG APP_VERSION=0.1.0
@@ -48,25 +48,23 @@ ENV VITE_GIT_COMMIT=$GIT_COMMIT \
     VITE_BUILD_TIME=$BUILD_TIME \
     VITE_APP_VERSION=$APP_VERSION
 
-RUN npm run build -w @syncframe/web
+RUN pnpm --filter @syncframe/web build
 
 # ---------- 阶段 2：安装 server 生产依赖（含 tsx 运行时） ----------
 FROM node:22-alpine AS deps
 WORKDIR /app
 
+RUN corepack enable
+
 # 同样只拷依赖清单；源码在阶段 3 直接从构建上下文拷贝，这里不需要
-COPY syncframe-poc/package.json syncframe-poc/package-lock.json ./
+COPY syncframe-poc/package.json syncframe-poc/pnpm-lock.yaml syncframe-poc/pnpm-workspace.yaml ./
 COPY syncframe-poc/packages/sync-protocol/package.json ./packages/sync-protocol/
 COPY syncframe-poc/packages/openlist-adapter/package.json ./packages/openlist-adapter/
 COPY syncframe-poc/apps/server/package.json ./apps/server/
 
-# 只装 server workspace 的生产依赖（含 openlist-adapter / sync-protocol），
-# 不含 vite / typescript / playwright 等 devDependencies，也不装 web 的依赖。
-# node_modules/@syncframe/* 是指向 ../packages/* 的相对软链，目标源码在阶段 3 才落盘，
-# 因此这里不需要源码即可完成安装。
-RUN npm config set fetch-retries 5 fetch-retry-mintimeout 20000 fetch-retry-maxtimeout 120000 \
-    && for i in 1 2 3; do npm ci --no-audit --no-fund --omit=dev -w @syncframe/server && break || { [ "$i" = 3 ] && exit 1; sleep 15; }; done \
-    && npm cache clean --force
+# 只装 @syncframe/server 及其 workspace 依赖的生产依赖（含 tsx / ws），
+# 不装 web / tests / devDependencies。产物落在 apps/server/node_modules 与根 node_modules。
+RUN for i in 1 2 3; do pnpm install --frozen-lockfile --prod --filter @syncframe/server... && break || { [ "$i" = 3 ] && exit 1; sleep 15; }; done
 
 # ---------- 阶段 3：运行时（无 npm，仅 nodejs） ----------
 FROM alpine:3.21
@@ -77,8 +75,10 @@ RUN apk add --no-cache nodejs \
 
 WORKDIR /app
 
-# node_modules 内的 @syncframe/* 为指向 ../packages/* 的相对软链，需一并拷贝 packages 源码
+# pnpm 严格布局：server 的依赖在 apps/server/node_modules（含 .bin/tsx 与
+# 指向 ../../packages/* 的 @syncframe/* 软链），根 node_modules 也要一并拷贝
 COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps/server/node_modules ./apps/server/node_modules
 COPY syncframe-poc/packages ./packages
 COPY syncframe-poc/apps/server ./apps/server
 COPY --from=build /app/apps/web/dist ./apps/web/dist
@@ -100,4 +100,4 @@ EXPOSE 8787
 RUN mkdir -p /app/data && chown -R node:node /app/data
 USER node
 
-CMD ["/app/node_modules/.bin/tsx", "apps/server/src/index.ts"]
+CMD ["/app/apps/server/node_modules/.bin/tsx", "apps/server/src/index.ts"]

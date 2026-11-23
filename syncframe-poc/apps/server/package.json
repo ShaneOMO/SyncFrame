@@ -8,8 +8,8 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
-    "@syncframe/openlist-adapter": "*",
-    "@syncframe/sync-protocol": "*",
+    "@syncframe/openlist-adapter": "workspace:*",
+    "@syncframe/sync-protocol": "workspace:*",
     "tsx": "^4.19.0",
     "ws": "^8.22.0"
   }

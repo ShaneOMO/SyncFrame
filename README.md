@@ -46,7 +46,7 @@ B 站登录、续期与 playurl 解析由现有服务端按请求处理，完整
 
 ```text
 SyncFrame/
-├── syncframe-poc/            # 全部代码（npm workspaces：apps + packages + tests）
+├── syncframe-poc/            # 全部代码（pnpm workspaces：apps + packages + tests）
 │   ├── apps/web/             # Vite 前端：入口 /（重定向至大厅）· 大厅 lobby.html · 房间 room.html · 账户设置 settings.html
 │   ├── apps/server/          # Node 后端：REST 鉴权 + WebSocket 同步房间 + provider 媒体解析 + 静态资源托管
 │   ├── packages/sync-protocol/# 同步协议包（时钟偏移、跟随纠偏、消息校验）
@@ -61,13 +61,13 @@ SyncFrame/
 
 ## 快速开始
 
-前置：Node.js 22+ 与 npm（本地调试）；Docker 与 Docker Compose v2（容器部署）。
+前置：Node.js 22+ 与 pnpm（`npm i -g pnpm` 安装；本地调试）；Docker 与 Docker Compose v2（容器部署）。
 
-### 方式一：npm 本地调试
+### 方式一：pnpm 本地调试
 
 ```bash
 cd syncframe-poc
-npm install
+pnpm install
 cp .env.example .env        # Windows: copy .env.example .env
 ```
 
@@ -86,10 +86,10 @@ cp .env.example .env        # Windows: copy .env.example .env
 
 ```bash
 # 终端 1：后端（REST + WS 同步房间 + OpenList 代理），默认 :8787
-npm run p1:server
+pnpm run p1:server
 
 # 终端 2：前端 Vite 开发服务器，默认 :5173（/api、/ws 已代理到 8787）
-npm run p1:web
+pnpm run p1:web
 ```
 
 打开 http://localhost:5173/ → 登录 → 创建房间 → 把邀请链接发给观众即可同步观影。
@@ -99,11 +99,11 @@ Windows 下也可以直接双击 `scripts/dev.bat`，会自动开两个窗口分
 **开发：**
 
 - Vite 自带 HMR，改前端即热更新；代理配置在 `apps/web/vite.config.ts`
-- 改后端代码用 `npx tsx watch --env-file-if-exists=.env apps/server/src/index.ts` 自动重启
-- 类型检查：`npm run typecheck`
-- 同步协议仿真：`npm run p2:sim`；安全测试：`npm run p3:security`
-- 前端冒烟测试：`npm run p3:ui`（需本机 Chrome/Edge）
-- provider 单测：`npm run p4:unit`；移动端布局检查：`npm run p4:mobile`（需本机 Chrome/Edge）
+- 改后端代码用 `pnpm exec tsx watch --env-file-if-exists=.env apps/server/src/index.ts` 自动重启
+- 类型检查：`pnpm run typecheck`
+- 同步协议仿真：`pnpm run p2:sim`；安全测试：`pnpm run p3:security`
+- 前端冒烟测试：`pnpm run p3:ui`（需本机 Chrome/Edge）
+- provider 单测：`pnpm run p4:unit`；移动端布局检查：`pnpm run p4:mobile`（需本机 Chrome/Edge）
 
 ### 方式二：Docker 构建并部署
 
@@ -135,7 +135,7 @@ ADMIN_PASSWORD=your_strong_password
             └─ /ws  WebSocket 同步房间（长连接）
 ```
 
-镜像在同一阶段完成前端构建（`npm run build -w @syncframe/web`），
+镜像在同一阶段完成前端构建（`pnpm --filter @syncframe/web build`），
 后端经 `WEB_DIST` 环境变量托管构建产物（`deploy/server.Dockerfile` 已内置）。
 
 **反向代理（由部署者自行设置）**：编排只把宿主机 `7300` 映射到容器 `8787`，
